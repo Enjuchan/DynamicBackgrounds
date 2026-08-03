@@ -13,6 +13,46 @@ major release.
 
 ---
 
+## 3.7.0
+
+### Changed
+
+- **Scrolling is smooth again, and switching servers or channels is noticeably
+  faster.** The background layer carried `background-attachment: fixed`, which
+  tells the browser it must not hand the image to the GPU and has to repaint
+  the whole surface on every scroll. At roughly two million pixels, on every
+  movement in the channel list, DM list or chat.
+
+  It was never needed: the layer is absolutely positioned and fills the
+  viewport, so it does not scroll along in the first place. And once an ambient
+  effect runs, its transform makes the container the reference frame, at which
+  point `fixed` behaves like `scroll` anyway.
+
+- Filters and blur now only apply when they actually do something. They used to
+  sit on both full-screen layers permanently, even at neutral values -
+  `grayscale(0%) contrast(100%) saturate(100%)` and `blur(0px)` change nothing
+  visible but still cost a compositing layer each, and `backdrop-filter`
+  additionally reads back the page behind it. Two `data` attributes now switch
+  the rules on, set whenever a value leaves its default.
+
+- `mix-blend-mode` is limited to the duration of an image change. It is only
+  needed while both layers are visible at once, so the crossfade does not dip;
+  the rest of the time it merely forced both into separate layers.
+
+- The inactive layer is now `visibility: hidden` outside of transitions. At
+  `opacity: 0` the browser skips painting it but still keeps the layer and its
+  filters around.
+
+### Notes
+
+The measurement that found this: two elements of 1997×1678 with an active
+filter, one of them invisible. The filters were the obvious suspect and got
+fixed first, but they were not the bottleneck. `fixed` is a single word inside
+a `background` shorthand and easy to miss - the symptom, scrolling stutter,
+pointed straight at it.
+
+---
+
 ## 3.6.3
 
 ### Fixed

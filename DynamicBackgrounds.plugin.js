@@ -2,7 +2,7 @@
  * @name DynamicBackgrounds
  * @author Enju
  * @description Extends Discord themes with background images, slideshow, transitions and ambient effects.
- * @version 3.6.3
+ * @version 3.7.0
  * @source https://github.com/Enjuchan/DynamicBackgrounds/blob/main/DynamicBackgrounds.plugin.js
  * @updateUrl https://raw.githubusercontent.com/Enjuchan/DynamicBackgrounds/main/DynamicBackgrounds.plugin.js
  * @website https://github.com/Enjuchan/DynamicBackgrounds
@@ -2409,9 +2409,9 @@ module.exports = meta => {
             decimals: 0,
             onChange: newVal => {
               setSettings(prev => ({ ...prev, adjustment: { ...prev.adjustment, blur: Math.min(100, Math.max(0, newVal)) } }));
-              viewTransition.bgContainer()?.style.setProperty('--BgManager-blur', Math.min(100, Math.max(0, newVal)) + 'px');
+              viewTransition.bgContainer()?.style.setProperty('--BgManager-blur', Math.min(100, Math.max(0, newVal)) + 'px'); viewTransition.setFxFlags();
             },
-            onSlide: newVal => viewTransition.bgContainer()?.style.setProperty('--BgManager-blur', Math.min(100, Math.max(0, newVal)) + 'px'),
+            onSlide: newVal => { viewTransition.bgContainer()?.style.setProperty('--BgManager-blur', Math.min(100, Math.max(0, newVal)) + 'px'); viewTransition.setFxFlags(); },
             suffix: ' px'
           })),
         }, {
@@ -2425,9 +2425,9 @@ module.exports = meta => {
             decimals: 0,
             onChange: newVal => {
               setSettings(prev => ({ ...prev, adjustment: { ...prev.adjustment, grayscale: Math.min(100, Math.max(0, newVal)) } }));
-              viewTransition.bgContainer()?.style.setProperty('--BgManager-grayscale', Math.min(100, Math.max(0, newVal)) + '%');
+              viewTransition.bgContainer()?.style.setProperty('--BgManager-grayscale', Math.min(100, Math.max(0, newVal)) + '%'); viewTransition.setFxFlags();
             },
-            onSlide: newVal => viewTransition.bgContainer()?.style.setProperty('--BgManager-grayscale', Math.min(100, Math.max(0, newVal)) + '%'),
+            onSlide: newVal => { viewTransition.bgContainer()?.style.setProperty('--BgManager-grayscale', Math.min(100, Math.max(0, newVal)) + '%'); viewTransition.setFxFlags(); },
             suffix: ' %'
           })),
         }, {
@@ -2441,9 +2441,9 @@ module.exports = meta => {
             decimals: 0,
             onChange: newVal => {
               setSettings(prev => ({ ...prev, adjustment: { ...prev.adjustment, saturate: Math.min(300, Math.max(0, newVal)) } }));
-              viewTransition.bgContainer()?.style.setProperty('--BgManager-saturation', Math.min(300, Math.max(0, newVal)) + '%');
+              viewTransition.bgContainer()?.style.setProperty('--BgManager-saturation', Math.min(300, Math.max(0, newVal)) + '%'); viewTransition.setFxFlags();
             },
-            onSlide: newVal => viewTransition.bgContainer()?.style.setProperty('--BgManager-saturation', Math.min(300, Math.max(0, newVal)) + '%'),
+            onSlide: newVal => { viewTransition.bgContainer()?.style.setProperty('--BgManager-saturation', Math.min(300, Math.max(0, newVal)) + '%'); viewTransition.setFxFlags(); },
             suffix: ' %'
           })),
         }, {
@@ -2457,9 +2457,9 @@ module.exports = meta => {
             decimals: 0,
             onChange: newVal => {
               setSettings(prev => ({ ...prev, adjustment: { ...prev.adjustment, contrast: Math.min(300, Math.max(0, newVal)) } }));
-              viewTransition.bgContainer()?.style.setProperty('--BgManager-contrast', Math.min(300, Math.max(0, newVal)) + '%');
+              viewTransition.bgContainer()?.style.setProperty('--BgManager-contrast', Math.min(300, Math.max(0, newVal)) + '%'); viewTransition.setFxFlags();
             },
-            onSlide: newVal => viewTransition.bgContainer()?.style.setProperty('--BgManager-contrast', Math.min(300, Math.max(0, newVal)) + '%'),
+            onSlide: newVal => { viewTransition.bgContainer()?.style.setProperty('--BgManager-contrast', Math.min(300, Math.max(0, newVal)) + '%'); viewTransition.setFxFlags(); },
             suffix: ' %'
           })),
         }
@@ -2994,22 +2994,61 @@ module.exports = meta => {
   z-index: -1;
   isolation: isolate;
 }
+/* Filter und Weichzeichnung haengen an data-Attributen, statt immer zu gelten.
+
+   Vorher standen sie fest in der Regel und griffen auch dann, wenn alle Werte
+   neutral waren - grayscale(0%) contrast(100%) saturate(100%) und blur(0px)
+   bewirken nichts, kosten aber trotzdem: Der Browser legt fuer jeden Filter
+   eine eigene Compositing-Ebene an und liest bei backdrop-filter zusaetzlich
+   den Hintergrund aus. Auf zwei bildschirmfuellenden Elementen ist das die
+   teuerste Dauerlast im Plugin, fuer null sichtbaren Effekt.
+
+   Die Attribute setzt setFxFlags(), sobald sich eine Einstellung aendert. */
 .BackgroundManager-bgContainer::after {
   content: '';
   position: absolute;
   inset: 0;
+}
+.BackgroundManager-bgContainer[data-blur]::after {
   backdrop-filter: blur(var(--BgManager-blur, 0px));
 }
 .BackgroundManager-bg {
   position: absolute;
   inset: 0;
   opacity: 0;
-  background: calc(50% - var(--BgManager-position-x, 0%)) calc(50% - var(--BgManager-position-y, 0%)) / cover no-repeat fixed;
-  filter: grayscale(var(--BgManager-grayscale, 0%)) contrast(var(--BgManager-contrast, 100%)) saturate(var(--BgManager-saturation, 100%));
-  mix-blend-mode: plus-lighter;
+  /* Bewusst OHNE background-attachment: fixed.
+
+     fixed nimmt den Hintergrund von der Auslagerung auf die Grafikkarte aus und
+     erzwingt bei jedem Scrollvorgang ein Neuzeichnen der gesamten Flaeche - hier
+     rund zwei Millionen Pixel, bei jeder Bewegung in Kanalliste, DM-Liste oder
+     Chat. Das war die mit Abstand groesste Bremse im Plugin.
+
+     Gebraucht wird es ohnehin nicht: Das Element liegt absolut und formatfuellend,
+     es scrollt gar nicht mit. Und sobald ein Dauereffekt laeuft, macht dessen
+     transform den Container zum Bezugsrahmen, womit fixed sich ohnehin wie
+     scroll verhaelt. */
+  background: calc(50% - var(--BgManager-position-x, 0%)) calc(50% - var(--BgManager-position-y, 0%)) / cover no-repeat;
   transition: var(--BgManager-transition-duration, 0ms) ease-out;
   transition-property: opacity, transform, filter;
   transform: scale(1) translateX(0);
+}
+.BackgroundManager-bgContainer[data-fx] .BackgroundManager-bg {
+  filter: grayscale(var(--BgManager-grayscale, 0%)) contrast(var(--BgManager-contrast, 100%)) saturate(var(--BgManager-saturation, 100%));
+}
+
+/* mix-blend-mode zwingt beide Ebenen in eigene Layer und wird nur waehrend
+   eines Bildwechsels gebraucht - dort sorgt es dafuer, dass die Ueberblendung
+   nicht durchhaengt. Im Ruhezustand liegt ohnehin nur eine Ebene sichtbar
+   uebereinander, dann ist es reine Last. */
+.BackgroundManager-bgContainer[data-fading] .BackgroundManager-bg {
+  mix-blend-mode: plus-lighter;
+}
+
+/* Die inaktive Ebene wird ausser waehrend eines Wechsels gar nicht gebraucht.
+   Bei opacity: 0 zeichnet der Browser sie zwar nicht, haelt aber Ebene und
+   Filter vor. visibility nimmt sie vollstaendig aus dem Rendering. */
+.BackgroundManager-bgContainer:not([data-fading]) .BackgroundManager-bg:not(.active) {
+  visibility: hidden;
 }
 .BackgroundManager-bg.active {
   opacity: 1;
@@ -4103,6 +4142,54 @@ BackgroundManager-gridWrapper::-webkit-scrollbar,
       constants.settings.adjustment.grayscale && bgContainer?.style.setProperty('--BgManager-grayscale', constants.settings.adjustment.grayscale + '%');
       constants.settings.adjustment.saturate !== 100 && bgContainer?.style.setProperty('--BgManager-saturation', constants.settings.adjustment.saturate + '%');
       constants.settings.adjustment.contrast !== 100 && bgContainer?.style.setProperty('--BgManager-contrast', constants.settings.adjustment.contrast + '%');
+      setFxFlags();
+    }
+
+    /* Schaltet Filter und Weichzeichnung ueber data-Attribute frei - aber nur,
+       wenn sie ueberhaupt etwas bewirken.
+
+       Ohne das lag auf beiden bildschirmfuellenden Ebenen dauerhaft ein
+       Filter, auch bei durchweg neutralen Werten. Ein Filter kostet immer eine
+       eigene Compositing-Ebene, backdrop-filter zusaetzlich das Auslesen des
+       Hintergrunds - unabhaengig davon, ob man das Ergebnis sieht. */
+    function setFxFlags() {
+      if (!bgContainer) return;
+      /* Gelesen wird vom Element, nicht aus den Einstellungen: Beim Ziehen
+         eines Reglers wird die CSS-Variable sofort gesetzt, der gespeicherte
+         Wert folgt erst danach. Aus den Einstellungen gelesen haette das
+         Attribut also stets einen Schritt hinterhergehinkt. */
+      const s = bgContainer.style;
+      const zahl = (name, standard) => {
+        const v = parseFloat(s.getPropertyValue(name));
+        return Number.isNaN(v) ? standard : v;
+      };
+      const hatFilter = zahl('--BgManager-grayscale', 0) !== 0
+        || zahl('--BgManager-saturation', 100) !== 100
+        || zahl('--BgManager-contrast', 100) !== 100;
+      bgContainer.toggleAttribute('data-fx', hatFilter);
+      bgContainer.toggleAttribute('data-blur', zahl('--BgManager-blur', 0) > 0);
+    }
+
+    /* Markiert die Zeit eines Bildwechsels.
+
+       Nur waehrend dieser Spanne liegen beide Ebenen sichtbar uebereinander -
+       dann braucht es mix-blend-mode, damit die Ueberblendung nicht
+       durchhaengt, und die zweite Ebene muss dargestellt werden. Danach ist
+       beides ueberfluessig und kostet nur.
+
+       Der Aufraeumer wird bei jedem Wechsel neu gesetzt; ein rasch folgender
+       zweiter Wechsel verlaengert die Spanne, statt sie vorzeitig zu beenden. */
+    let fadeTimer = null;
+    function markiereUeberblendung() {
+      if (!bgContainer) return;
+      bgContainer.toggleAttribute('data-fading', true);
+      clearTimeout(fadeTimer);
+      const dauer = constants.settings.transition.enabled
+        ? (constants.settings.transition.duration ?? 0) : 0;
+      fadeTimer = setTimeout(() => {
+        bgContainer?.toggleAttribute('data-fading', false);
+        fadeTimer = null;
+      }, dauer + 80);   /* etwas Zuschlag, damit nichts mitten im Ausblenden abreisst */
     }
     // Use React component instead of DOM manipulation, as Discord sometimes removes those.
     function baseLayerBg() {
@@ -4196,6 +4283,7 @@ BackgroundManager-gridWrapper::-webkit-scrollbar,
         domBG[activeIndex].style.backgroundImage = 'linear-gradient(rgba(0,0,0,var(--BgManager-dimming,0)), rgba(0,0,0,var(--BgManager-dimming,0))), url(' + src + ')';
         domBG[activeIndex].classList.add('active');
         domBG[activeIndex ^ 1].classList.remove('active');
+        markiereUeberblendung();
       }
       if (!property || !constants.settings.overwriteCSS) return;
       if (originalBackground) {
@@ -4283,7 +4371,7 @@ BackgroundManager-gridWrapper::-webkit-scrollbar,
         })
       });
     }
-    return { create, setImage, removeImage, destroy, bgContainer: () => bgContainer, setProperty, previewImage, endPreview, commitPreview }
+    return { create, setImage, removeImage, destroy, bgContainer: () => bgContainer, setProperty, previewImage, endPreview, commitPreview, setFxFlags }
   }();
 
   const themeObserver = function () {
