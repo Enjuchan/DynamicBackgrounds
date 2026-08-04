@@ -13,6 +13,34 @@ major release.
 
 ---
 
+## 3.8.0
+
+### Added
+
+- **The grid draws thumbnails instead of full-resolution images.** Every image
+  now carries a small 480px WebP copy alongside the original, and the library
+  view uses that.
+
+  What made this worth doing is that file size was never the issue. A decoded
+  image costs `width × height × 4` bytes in memory no matter how well it
+  compresses. Measured against a real library: 2688×1536 is 600 KB as a file and
+  15.8 MB once decoded, a factor of 26. And because categories are shown as
+  fanned stacks of five cards side by side, practically the whole library is
+  painted at once. For 34 images that came to roughly 537 MB, all of it to fill
+  cards 240px wide.
+
+  With thumbnails the same library needs about 18 MB.
+
+  The originals are untouched. They are still what you see as a background, what
+  the hover preview loads, and what the ZIP export writes.
+
+- Images uploaded before this version get their thumbnail generated in the
+  background the next time the manager is opened, one at a time so nothing
+  stutters, and it is stored afterwards. Until a thumbnail exists the grid falls
+  back to the original, so it may be slow once but is never blank.
+
+---
+
 ## 3.7.2
 
 ### Changed

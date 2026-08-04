@@ -2,7 +2,7 @@
  * @name DynamicBackgrounds
  * @author Enju
  * @description Extends Discord themes with background images, slideshow, transitions and ambient effects.
- * @version 3.7.2
+ * @version 3.8.0
  * @source https://github.com/Enjuchan/DynamicBackgrounds/blob/main/DynamicBackgrounds.plugin.js
  * @updateUrl https://raw.githubusercontent.com/Enjuchan/DynamicBackgrounds/main/DynamicBackgrounds.plugin.js
  * @website https://github.com/Enjuchan/DynamicBackgrounds
@@ -176,8 +176,44 @@ module.exports = meta => {
         try { URL.revokeObjectURL(target._bgObjectURL); } catch (e) {}
         target._bgObjectURL = null;
       }
+      if (target._thumbObjectURL) {
+        try { URL.revokeObjectURL(target._thumbObjectURL); } catch (e) {}
+        target._thumbObjectURL = null;
+      }
       if (target.src && (!target.image || target.src !== target.image)) target.src = null;
     } catch (e) { /* ignore */ }
+  }
+
+  /* VORSCHAUBILDER ---------------------------------------------------------
+
+     Das Raster zeigt Bilder auf rund 240px Breite, gespeichert sind sie aber in
+     voller Aufloesung. Entscheidend ist dabei nicht die Dateigroesse, sondern
+     die Pixelzahl: Dekodiert kostet ein Bild Breite * Hoehe * 4 Bytes, egal wie
+     gut es komprimiert ist. Gemessen an einer echten Sammlung: 2688x1536 sind
+     600 KB als Datei und 15,8 MB im Speicher, Faktor 26.
+
+     Weil die Kategorien als aufgefaecherte Stapel mit je fuenf Karten
+     nebeneinander liegen, ist praktisch die ganze Sammlung gleichzeitig gemalt.
+     Bei 34 Bildern waren das rund 537 MB.
+
+     Deshalb liegt neben dem Original eine kleine Fassung unter .thumb. Das
+     Original wird NICHT angetastet und weiterhin als Hintergrund benutzt - die
+     Vorschau ist ausschliesslich fuer die Rasteransicht da. */
+  const THUMB_WIDTH = 480;
+
+  function ensureThumbURL(item) {
+    try {
+      if (!item) return null;
+      if (item._thumbObjectURL) return item._thumbObjectURL;
+      if (item.thumb instanceof Blob) {
+        const url = URL.createObjectURL(item.thumb);
+        item._thumbObjectURL = url;
+        return url;
+      }
+    } catch (e) { /* ignore */ }
+    /* Noch keine Vorschau vorhanden - bis backfillThumbs durch ist, wird das
+       Original gezeigt. Lieber kurz teuer als ein leeres Raster. */
+    return item?.src || ensureObjectURL(item);
   }
   /**
    * @typedef {Object} ImageItem
@@ -347,6 +383,9 @@ module.exports = meta => {
           if (!e.src) ensureObjectURL(e);
           return e;
         }))
+        /* Fehlende Vorschauen im Hintergrund nachrechnen. Solange sie fehlen,
+           zeigt das Raster die Originale, es ist also nur langsam, nie leer. */
+        backfillThumbs(storedItems, () => setItems(prev => [...prev]));
       })
       return () => {
         accessDB((storedItems, db) => {
@@ -1102,7 +1141,10 @@ module.exports = meta => {
               },
               className: constants.textStyles?.['text-sm/normal'],
               children: [
-                'Total storage size: ' + formatNumber(images.reduce((p, c) => p + c.image.size, 0)) + (settings.selectedCategory ? ` (${filteredImages.length} of ${images.length})` : ''),
+                /* Vorschauen zaehlen mit: Die Zeile soll den Platzbedarf des
+                   Plugins nennen, und seit 3.8.0 liegt neben jedem Original
+                   eine kleine Fassung. Ohne sie waere die Zahl zu niedrig. */
+                'Total storage size: ' + formatNumber(images.reduce((p, c) => p + (c.image?.size || 0) + (c.thumb?.size || 0), 0)) + (settings.selectedCategory ? ` (${filteredImages.length} of ${images.length})` : ''),
                 constants.settings.slideshow.enabled && images.length >= 2 ? jsx(IconButton, {
                   TooltipProps: { text: 'Next background' },
                   ButtonProps: {
@@ -1249,7 +1291,7 @@ module.exports = meta => {
 
                               nodes.push(jsx('img', {
                                 key: p.id,
-                                src: p.src || ensureObjectURL(p),
+                                src: ensureThumbURL(p),
                                 alt: '',
                                 onLoad: e => {
                                   try {
@@ -1382,8 +1424,8 @@ module.exports = meta => {
                   border: '1px solid #444' 
                 },
                 children: [
-                  jsx('img', { 
-                    src: img.src || ensureObjectURL(img),
+                  jsx('img', {
+                    src: ensureThumbURL(img),
                     alt: img.name,
                     style: { width: '100%', height: 120, objectFit: 'cover', borderRadius: 4, marginBottom: 8 } 
                   }),
@@ -1572,7 +1614,7 @@ module.exports = meta => {
         children: [
             !loaded ? jsx(constants.nativeUI.Spinner) : error ? jsx('div', { className: constants.textStyles?.defaultColor }, 'Image could not be loaded') : jsx('img', {
             tabIndex: '-1',
-            src: item.src || '',
+            src: ensureThumbURL(item) || '',
             className: 'DynamicBackgrounds-image',
           }), !error ? jsx(Fragment, {
             children: [
@@ -1619,8 +1661,11 @@ module.exports = meta => {
       // Optimize newly uploaded images before creating object URL
       const filename = blob?.name;
       const optimized = await optimizeNewUpload(blob, filename);
+      // Gleich mit erzeugen, sonst zeigt das Raster das neue Bild bis zum
+      // naechsten Oeffnen in voller Aufloesung.
+      const thumb = await makeThumb(optimized);
       const img = new Image();
-      img.onload = () => setImages(prev => [...prev, { id: prev.length + 1, image: optimized, width: img.width, height: img.height, selected: false, src: img.src, category: currentCategory || FALLBACK_CATEGORY }]);
+      img.onload = () => setImages(prev => [...prev, { id: prev.length + 1, image: optimized, thumb, width: img.width, height: img.height, selected: false, src: img.src, category: currentCategory || FALLBACK_CATEGORY }]);
       img.onerror = () => clearObjectURL(img);
       setObjectURL(img, optimized);
     }, [setImages, currentCategory]);
@@ -2545,9 +2590,10 @@ module.exports = meta => {
             if (!response.ok) throw new Error(response.status);
             if (!response.headers.get('Content-Type').startsWith('image/')) throw new Error('Item is not an image.');
             const blub = await response.blob();
+            const thumb = await makeThumb(blub);
             const image = new Image();
             image.onload = () => setImageFromIDB(storedImages => {
-              storedImages.push({ id: storedImages.length + 1, image: blub, width: image.width, height: image.height, selected: false, src: null });
+              storedImages.push({ id: storedImages.length + 1, image: blub, thumb, width: image.width, height: image.height, selected: false, src: null });
               clearObjectURL(image);
               UI.showToast("Successfully added to DynamicBackgrounds", { type: 'success' });
             });
@@ -3996,6 +4042,85 @@ DynamicBackgrounds-gridWrapper::-webkit-scrollbar,
    * @param {string} [filename]
    * @returns {Promise<Blob|File>}
    */
+  /**
+   * Erzeugt die verkleinerte Fassung fuer die Rasteransicht.
+   * Gibt null zurueck, wenn sich das nicht lohnt oder nicht geht - dann zeigt
+   * ensureThumbURL weiterhin das Original.
+   * @param {Blob} blob
+   * @returns {Promise<Blob|null>}
+   */
+  async function makeThumb(blob) {
+    try {
+      if (!blob || !blob.type || !blob.type.startsWith('image/')) return null;
+      // SVG skaliert von selbst, ICO ist ohnehin winzig.
+      if (blob.type === 'image/svg+xml' || blob.type === 'image/x-icon') return null;
+
+      const bitmap = await createImageBitmap(blob);
+      if (bitmap.width <= THUMB_WIDTH) { bitmap.close?.(); return null; }
+
+      const width = THUMB_WIDTH;
+      const height = Math.max(1, Math.round(bitmap.height * (THUMB_WIDTH / bitmap.width)));
+      const canvas = (typeof OffscreenCanvas !== 'undefined')
+        ? new OffscreenCanvas(width, height)
+        : document.createElement('canvas');
+      canvas.width = width;
+      canvas.height = height;
+      const ctx = canvas.getContext('2d');
+      ctx.drawImage(bitmap, 0, 0, width, height);
+      bitmap.close?.();
+
+      // 0.82 statt der 0.995 des Originals: Auf 480px sieht man den
+      // Unterschied nicht, die Datei wird aber ein Vielfaches kleiner.
+      if (canvas.convertToBlob) return await canvas.convertToBlob({ type: 'image/webp', quality: 0.82 });
+      if (canvas.toBlob) return await new Promise(res => canvas.toBlob(res, 'image/webp', 0.82));
+      return null;
+    } catch (e) {
+      console.warn('[DynamicBackgrounds] Thumbnail creation failed:', e);
+      return null;
+    }
+  }
+
+  /* Rechnet Vorschauen fuer alles nach, was vor 3.8.0 hochgeladen wurde.
+     Laeuft einmal im Hintergrund, danach steht .thumb in der Datenbank.
+
+     Bewusst NACHEINANDER und mit Rueckgabe an die Ereignisschleife zwischen den
+     Bildern: alle auf einmal zu dekodieren waere genau der Speicherberg, den
+     das hier abtragen soll. */
+  let thumbBackfillLaeuft = false;
+  async function backfillThumbs(items, onDone) {
+    if (thumbBackfillLaeuft) return;
+    const fehlend = (items || []).filter(e => e?.image instanceof Blob && !(e.thumb instanceof Blob));
+    if (!fehlend.length) return;
+
+    thumbBackfillLaeuft = true;
+    const fertig = new Map();
+    let db;
+    try {
+      for (const item of fehlend) {
+        const thumb = await makeThumb(item.image);
+        if (thumb) { item.thumb = thumb; fertig.set(item.id, thumb); }
+        await new Promise(res => setTimeout(res, 16));
+      }
+      if (!fertig.size) return;
+
+      /* Frisch aus der Datenbank lesen und nur .thumb ergaenzen. Die Objekte im
+         React-Zustand tragen fluechtige Felder wie _thumbObjectURL mit sich -
+         die haben in der Datenbank nichts verloren. */
+      db = await openDB('images');
+      const gespeichert = await getAllItems(db, 'images');
+      gespeichert.forEach(e => { const t = fertig.get(e.id); if (t) e.thumb = t; });
+      await saveItems(db, 'images', gespeichert, gespeichert);
+
+      console.log('%c[DynamicBackgrounds] %cThumbnails generated for ' + fertig.size + ' image(s).', "color:#DBDCA6;font-weight:bold", "");
+      onDone?.();
+    } catch (e) {
+      console.warn('[DynamicBackgrounds] Thumbnail backfill failed:', e);
+    } finally {
+      db?.close();
+      thumbBackfillLaeuft = false;
+    }
+  }
+
   async function optimizeNewUpload(blob, filename) {
     try {
       if (!blob || !blob.type || !blob.type.startsWith('image/')) return blob;
