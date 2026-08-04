@@ -10,6 +10,19 @@ GitHub shortly after start - see [Updates](#updates).
 
 ---
 
+## Screenshots
+
+<img src="screenshots/manager.png" width="660" alt="The background manager">
+
+The gear opens transitions, ambient effects and image adjustments:
+
+<img src="screenshots/settings.png" width="290" alt="Effect and adjustment settings">
+
+> The preview images above were blurred for this README. The plugin shows them
+> sharp.
+
+---
+
 ## Features
 
 **Background management**
