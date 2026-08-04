@@ -13,6 +13,35 @@ major release.
 
 ---
 
+## 3.7.1
+
+### Fixed
+
+- **The whole client no longer jumps up and down by a few pixels while an
+  ambient effect is running.** Every few seconds the interface ticked upwards
+  and back, and the header row was clipped at the top edge of the window while
+  it was displaced.
+
+  Ambient effects enlarge the background container with `transform: scale`, by
+  between 2% and 14% depending on the effect. That overscan is deliberate:
+  without it, panning would reveal the edges of the image. But a transformed
+  element counts towards the scrollable area of every ancestor with its
+  enlarged box, and the container is absolutely positioned. The app grew past
+  the window, measured at 1626px inside 1610px.
+
+  Discord's own mount point keeps `overflow: hidden` yet still scrolls
+  programmatically. As the animation ran, the height oscillated, the browser
+  kept correcting the scroll offset, and everything shifted by 16px and back.
+
+  The background layer now clips to the window. Nothing looks different, since
+  the overscan was never visible in the first place.
+
+  Only the container itself could not be the place to fix this: it *is* the
+  enlarged element, so its own box overflows regardless of how it treats its
+  children.
+
+---
+
 ## 3.7.0
 
 ### Changed

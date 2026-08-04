@@ -2,7 +2,7 @@
  * @name DynamicBackgrounds
  * @author Enju
  * @description Extends Discord themes with background images, slideshow, transitions and ambient effects.
- * @version 3.7.0
+ * @version 3.7.1
  * @source https://github.com/Enjuchan/DynamicBackgrounds/blob/main/DynamicBackgrounds.plugin.js
  * @updateUrl https://raw.githubusercontent.com/Enjuchan/DynamicBackgrounds/main/DynamicBackgrounds.plugin.js
  * @website https://github.com/Enjuchan/DynamicBackgrounds
@@ -2984,9 +2984,28 @@ module.exports = meta => {
 .BackgroundManager-NumberInput::-webkit-scrollbar {
   display: none;
 }
+/* overflow: hidden beschneidet die Hintergrundebene aufs Fenster.
+
+   Die Dauereffekte vergroessern den Container per transform: scale (1.02 bis
+   1.14, siehe die bm-*-Keyframes weiter unten). Der Ueberstand ist Absicht,
+   sonst tauchen beim Schwenken die Raender auf - aber ein transformiertes
+   Element zaehlt mit seinem vergroesserten Kasten zur scrollbaren Flaeche
+   ALLER Vorfahren. Der Container liegt absolut, also wuchs die App ueber die
+   Fensterhoehe hinaus: gemessen 1626px bei 1610px Fenster.
+
+   appMount hat overflow: hidden und laesst sich trotzdem scrollen. Die Hoehe
+   pendelte im Takt der Animation, der Browser rueckte scrollTop nach, und der
+   gesamte Inhalt sprang alle paar Sekunden um 16px hoch und zurueck. Sichtbar
+   wurde es vor allem oben, weil die Kopfzeile dann ueber der Fensterkante lag.
+
+   Beschnitten wird hier statt am Container selbst: Der Container IST das
+   vergroesserte Element, sein eigener Kasten ragt also weiter heraus, egal was
+   er mit seinen Kindern macht. Optisch aendert sich nichts, der Ueberstand war
+   nie zu sehen. */
 #app-mount .${constants.baseLayer.bg} {
   isolation: isolate;
   display: block;
+  overflow: hidden;
 }
 .BackgroundManager-bgContainer {
   position: absolute;
