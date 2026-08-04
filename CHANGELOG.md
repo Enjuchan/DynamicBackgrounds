@@ -40,6 +40,11 @@ major release.
   enlarged element, so its own box overflows regardless of how it treats its
   children.
 
+- **Everything the user sees is English again.** One toast after downloading an
+  image and four console messages had been left in German, sitting between
+  otherwise English ones. Code comments stay German; the line runs between
+  comment and output, not between file and file.
+
 ---
 
 ## 3.7.0

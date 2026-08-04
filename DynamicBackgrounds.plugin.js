@@ -510,7 +510,7 @@ module.exports = meta => {
       const orphans = Object.keys(groupedByCategory)
         .filter(c => c && !known.has(c) && (groupedByCategory[c] || []).length > 0);
       if (!orphans.length) return;
-      console.log('%c[DynamicBackgrounds] %cVerwaiste Kategorien wiederhergestellt:', "color:#DBDCA6;font-weight:bold", "", orphans);
+      console.log('%c[DynamicBackgrounds] %cOrphaned categories restored:', "color:#DBDCA6;font-weight:bold", "", orphans);
       setSettings(prev => ({ ...prev, categories: [...(prev.categories || []), ...orphans] }));
     }, [groupedByCategory, settings.categories]);
 
@@ -813,7 +813,7 @@ module.exports = meta => {
         a.click();
         document.body.removeChild(a);
         URL.revokeObjectURL(url);
-        UI.showToast(`"${fileName}" heruntergeladen!`, { type: 'success' });
+        UI.showToast(`"${fileName}" downloaded`, { type: 'success' });
       } catch (error) {
         console.error('Download failed:', error);
         UI.showToast("Download failed: " + error.message, { type: 'error' });
@@ -4110,7 +4110,7 @@ BackgroundManager-gridWrapper::-webkit-scrollbar,
               await saveItems(db, 'images', storedImages, storedImages);
               db.close();
             } catch (err) { console.error(err) }
-            console.log('%c[DynamicBackgrounds] %cBild gewechselt:', "color:#DBDCA6;font-weight:bold", "", new Date())
+            console.log('%c[DynamicBackgrounds] %cBackground changed:', "color:#DBDCA6;font-weight:bold", "", new Date())
           } else if (availableImages.length) {
             const nextIndex = ((currentIndex ?? -1) + 1) % availableImages.length;
             storedImages.forEach(e => {
@@ -4129,7 +4129,7 @@ BackgroundManager-gridWrapper::-webkit-scrollbar,
               await saveItems(db, 'images', storedImages, storedImages);
               db.close();
             } catch (err) { console.error(err) }
-            console.log('%c[DynamicBackgrounds] %cBild gewechselt:', "color:#DBDCA6;font-weight:bold", "", new Date())
+            console.log('%c[DynamicBackgrounds] %cBackground changed:', "color:#DBDCA6;font-weight:bold", "", new Date())
           }
         } catch (err) { console.error(err) }
       }
@@ -4402,7 +4402,7 @@ BackgroundManager-gridWrapper::-webkit-scrollbar,
       // observe(null) wuerde werfen und das Plugin ueber das catch deaktivieren.
       const target = document.querySelector('bd-head bd-themes');
       if (!target) {
-        console.warn('%c[BackgroundManager] %cKein <bd-themes> gefunden - overwriteCSS wird uebersprungen. Das Plugin laeuft normal weiter und nutzt seine eigene Hintergrund-Ebene.', "color:#DBDCA6;font-weight:bold", "");
+        console.warn('%c[BackgroundManager] %cNo <bd-themes> found - overwriteCSS is being skipped. The plugin keeps running normally and uses its own background layer.', "color:#DBDCA6;font-weight:bold", "");
         return;
       }
 
@@ -4632,7 +4632,7 @@ BackgroundManager-gridWrapper::-webkit-scrollbar,
             const toMigrate = storedItems.filter(e => e.category === LEGACY_FALLBACK_CATEGORY);
             if (toMigrate.length) {
               toMigrate.forEach(e => { e.category = FALLBACK_CATEGORY; });
-              console.log('%c[BackgroundManager] %c' + toMigrate.length + ' Bild(er) von "' + LEGACY_FALLBACK_CATEGORY + '" nach "' + FALLBACK_CATEGORY + '" umgezogen.', "color:#DBDCA6;font-weight:bold", "");
+              console.log('%c[BackgroundManager] %c' + toMigrate.length + ' image(s) moved from "' + LEGACY_FALLBACK_CATEGORY + '" to "' + FALLBACK_CATEGORY + '".', "color:#DBDCA6;font-weight:bold", "");
               try { saveItems(db, 'images', storedItems, storedItems); } catch (e) { console.error(e); }
             }
 
