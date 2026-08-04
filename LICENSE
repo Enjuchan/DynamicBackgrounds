@@ -1,6 +1,10 @@
 MIT License
 
+Copyright (c) 2024 Naru-kami
 Copyright (c) 2026 Enju
+
+This plugin started from BackgroundManager by Naru-kami and still contains code
+from it: https://github.com/Naru-kami/BackgroundManager-plugin
 
 Permission is hereby granted, free of charge, to any person obtaining a copy
 of this software and associated documentation files (the "Software"), to deal

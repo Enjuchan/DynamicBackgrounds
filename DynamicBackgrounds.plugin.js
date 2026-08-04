@@ -2,11 +2,21 @@
  * @name DynamicBackgrounds
  * @author Enju
  * @description Extends Discord themes with background images, slideshow, transitions and ambient effects.
- * @version 3.7.1
+ * @version 3.7.2
  * @source https://github.com/Enjuchan/DynamicBackgrounds/blob/main/DynamicBackgrounds.plugin.js
  * @updateUrl https://raw.githubusercontent.com/Enjuchan/DynamicBackgrounds/main/DynamicBackgrounds.plugin.js
  * @website https://github.com/Enjuchan/DynamicBackgrounds
  */
+
+/* Based on BackgroundManager by Naru-kami, MIT licensed:
+   https://github.com/Naru-kami/BackgroundManager-plugin
+
+   This plugin started from that code and still contains parts of it.
+
+   Die CSS-Klassen hiessen bis 3.7.2 BackgroundManager-*, geerbt aus jener
+   Vorlage. Wer sie erneut umbenennt, muss das Theme mitziehen: Lovelace
+   erkennt das laufende Plugin an .DynamicBackgrounds-bgContainer und tritt
+   dann beim Hintergrund zurueck. */
 
 const { React, Webpack, UI, Webpack: { Filters }, Patcher, DOM, ContextMenu, Data } = BdApi;
 
@@ -393,7 +403,7 @@ module.exports = meta => {
       if (e.key === 'Enter' || e.key === ' ') onClick();
     }, [onClick, props.onKeyDown]);
     return jsx(IconButton, {
-      TooltipProps: { text: 'Background Manager', position: 'bottom', shouldShow: props.showTooltip },
+      TooltipProps: { text: 'DynamicBackgrounds', position: 'bottom', shouldShow: props.showTooltip },
       ButtonProps: {
         ...props,
         component: 'div',
@@ -447,16 +457,16 @@ module.exports = meta => {
       tabIndex: "-1",
       "aria-modal": "true",
       style: { overflow: 'visible' },
-      className: [constants.messagesPopoutClasses?.messagesPopoutWrap, 'BackgroundManager-popoutWrap'].filter(Boolean).join(' '),
-    }, jsx('div', { className: 'BackgroundManager-popoutInner' }, jsx(ManagerHead), jsx(ManagerBody)) )
+      className: [constants.messagesPopoutClasses?.messagesPopoutWrap, 'DynamicBackgrounds-popoutWrap'].filter(Boolean).join(' '),
+    }, jsx('div', { className: 'DynamicBackgrounds-popoutInner' }, jsx(ManagerHead), jsx(ManagerBody)) )
   }
 
   function ManagerHead() {
     return jsx('div', {
-      className: [constants.messagesPopoutClasses?.header, 'BackgroundManager-head'].filter(Boolean).join(' ')
+      className: [constants.messagesPopoutClasses?.header, 'DynamicBackgrounds-head'].filter(Boolean).join(' ')
       }, jsx('h1', {
         className: [constants.textStyles?.defaultColor, constants.textStyles?.['heading-md/medium']].join(' '),
-      }, "Background Manager"));
+      }, "DynamicBackgrounds"));
   }
 
   function ManagerBody() {
@@ -780,19 +790,15 @@ module.exports = meta => {
     // Export Handler
     const handleDownloadImage = useCallback(async (img) => {
       try {
-        console.log('Download attempt for image:', img);
         let blob;
-        
+
         if (img.image && img.image instanceof Blob) {
-          // Use the stored blob directly from IndexedDB
+          // Der Blob aus der IndexedDB direkt, ohne Umweg
           blob = img.image;
-          console.log('Using stored blob, size:', blob.size);
         } else if (img.src) {
-          // Fallback: fetch from object URL or regular URL
-          console.log('Fetching from src:', img.src);
+          // Rueckfall: ueber die Objekt-URL nachladen
           const response = await fetch(img.src);
           blob = await response.blob();
-          console.log('Fetched blob, size:', blob.size);
         } else {
           console.error('No image data available for download');
           UI.showToast("Image cannot be downloaded - no data available", { type: 'error' });
@@ -800,10 +806,10 @@ module.exports = meta => {
         }
         
         const fileName = img.name || `background_${img.id}.jpg`;
-        console.log('Using filename:', fileName);
-        
-        // Always use browser fallback for reliability
-        console.log('Using browser download method');
+
+        /* Bewusst der Browser-Weg ueber ein <a download>: Der Renderer hat
+           keinen verlaesslichen Dateizugriff, und dieser Weg loest Discords
+           eigenen Speichern-Dialog aus. */
         const url = URL.createObjectURL(blob);
         const a = document.createElement('a');
         a.href = url;
@@ -891,18 +897,18 @@ module.exports = meta => {
                darueber macht klar, worauf sich der Schalter bezieht.
                Zeile 1 steuert, WAS laeuft. Zeile 2 verwaltet die Sammlung. */
             jsx('div', {
-              className: 'BackgroundManager-toolbar',
+              className: 'DynamicBackgrounds-toolbar',
               children: [
                 jsx('div', {
                   key: 'row-slideshow',
-                  className: 'BackgroundManager-toolRow',
+                  className: 'DynamicBackgrounds-toolRow',
                   children: [
-                    jsx('span', { key: 'l', className: 'BackgroundManager-toolLabel' }, 'Slideshow'),
+                    jsx('span', { key: 'l', className: 'DynamicBackgrounds-toolLabel' }, 'Slideshow'),
 
                     // Diashow anhalten und fortsetzen
                     jsx('button', {
                       key: 'play',
-                      className: 'BackgroundManager-chip' + (settings.slideshow?.enabled ? ' active' : ''),
+                      className: 'DynamicBackgrounds-chip' + (settings.slideshow?.enabled ? ' active' : ''),
                       title: settings.slideshow?.enabled ? 'Pause the slideshow' : 'Start the slideshow',
                       onClick: () => {
                         const next = !settings.slideshow?.enabled;
@@ -921,7 +927,7 @@ module.exports = meta => {
                     // Favoriten-Filter
                     jsx('button', {
                       key: 'fav',
-                      className: 'BackgroundManager-chip' + (slideshowFavoritesOnly ? ' active' : ''),
+                      className: 'DynamicBackgrounds-chip' + (slideshowFavoritesOnly ? ' active' : ''),
                       title: slideshowFavoritesOnly ? 'Slideshow uses favorites only' : 'Slideshow uses all images',
                       onClick: () => {
                         setSlideshowFavoritesOnly(prev => {
@@ -946,7 +952,7 @@ module.exports = meta => {
 
                     jsx('button', {
                       key: 'next',
-                      className: 'BackgroundManager-chip',
+                      className: 'DynamicBackgrounds-chip',
                       title: 'Show the next background now',
                       onClick: onNextShuffle,
                       children: [
@@ -960,11 +966,11 @@ module.exports = meta => {
                        Gruppe mit Abstand - sie gehoeren nicht zu den Filtern. */
                     jsx('div', {
                       key: 'end',
-                      className: 'BackgroundManager-toolEnd',
+                      className: 'DynamicBackgrounds-toolEnd',
                       children: [
                         jsx('button', {
                           key: 'more',
-                          className: 'BackgroundManager-iconButton',
+                          className: 'DynamicBackgrounds-iconButton',
                           title: 'More actions',
                           'aria-label': 'More actions',
                           onClick: e => {
@@ -1014,19 +1020,19 @@ module.exports = meta => {
 
                 jsx('div', {
                   key: 'row-library',
-                  className: 'BackgroundManager-toolRow',
+                  className: 'DynamicBackgrounds-toolRow',
                   children: [
-                    jsx('span', { key: 'l', className: 'BackgroundManager-toolLabel' }, 'Library'),
+                    jsx('span', { key: 'l', className: 'DynamicBackgrounds-toolLabel' }, 'Library'),
                     jsx('button', {
                       key: 'newcat',
-                      className: 'BackgroundManager-chip',
+                      className: 'DynamicBackgrounds-chip',
                       title: 'Create a new category',
                       onClick: () => setShowCategoryInput(!showCategoryInput),
                       children: [jsx('span', { key: 'p', style: { fontSize: '15px', lineHeight: 1 } }, '+'), jsx('span', { key: 't' }, 'New category')]
                     }),
                     jsx('button', {
                       key: 'export',
-                      className: 'BackgroundManager-chip',
+                      className: 'DynamicBackgrounds-chip',
                       title: 'Save all images as a ZIP file',
                       onClick: () => setShowExportOverlay(true),
                       children: [
@@ -1046,19 +1052,19 @@ module.exports = meta => {
             }),
             // Kategorie-Leiste
             jsx('div', {
-              className: 'BackgroundManager-categoryBar',
+              className: 'DynamicBackgrounds-categoryBar',
               children: [
                 // Categories button replaces select: opens context menu with all categories (including empty)
                 /* Hier steht nur noch Zustandsabhaengiges. Leere Kategorien oeffnet man
                    ueber das Ueberlaufmenue ("Open category"). */
                 settings.selectedCategory ? jsx('button', {
-                  className: 'BackgroundManager-chip',
+                  className: 'DynamicBackgrounds-chip',
                   title: 'Back to the category overview',
                   onClick: () => setSettings(prev => ({ ...prev, selectedCategory: null })),
                   children: [jsx('span', { key: 'a' }, '\u2190'), jsx('span', { key: 't' }, 'All categories')]
                 }) : null,
                 settings.selectedCategory && settings.selectedCategory !== FALLBACK_CATEGORY ? jsx('button', {
-                  className: 'BackgroundManager-categoryButton delete',
+                  className: 'DynamicBackgrounds-categoryButton delete',
                   title: 'Delete category',
                   onClick: () => handleDeleteCategory(settings.selectedCategory),
                   children: '×'
@@ -1066,19 +1072,19 @@ module.exports = meta => {
               ]
             }),
             showCategoryInput ? jsx('div', {
-              className: 'BackgroundManager-categoryInputRow',
+              className: 'DynamicBackgrounds-categoryInputRow',
               children: [
                 jsx('input', {
                   ref: categoryInputRef,
                   type: 'text',
-                  className: 'BackgroundManager-categoryInput',
+                  className: 'DynamicBackgrounds-categoryInput',
                   placeholder: 'Category name...',
                   value: newCategoryName,
                   onChange: (e) => setNewCategoryName(e.target.value),
                   onKeyDown: (e) => e.key === 'Enter' && handleAddCategory()
                 }),
                 jsx('button', {
-                  className: 'BackgroundManager-categoryButton',
+                  className: 'DynamicBackgrounds-categoryButton',
                   onClick: handleAddCategory,
                   children: '✓'
                 })
@@ -1102,7 +1108,7 @@ module.exports = meta => {
                   ButtonProps: {
                     style: { padding: 0, marginRight: 9 },
                     onClick: onNextShuffle,
-                    className: 'BackgroundManager-nextButton ' + constants.textStyles?.defaultColor,
+                    className: 'DynamicBackgrounds-nextButton ' + constants.textStyles?.defaultColor,
                   },
                   SvgProps: {
                     width: '18', height: '18',
@@ -1112,7 +1118,7 @@ module.exports = meta => {
               ],
             }) : null,
                 jsx('div', {
-                  className: ['BackgroundManager-gridWrapper', constants.scrollbar?.thin].join(' '),
+                  className: ['DynamicBackgrounds-gridWrapper', constants.scrollbar?.thin].join(' '),
                   style: { display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 12, overflowX: 'visible', overflowY: 'auto' },
                   children: (settings.selectedCategory ? filteredImages.map((e, i) => jsx(ImageComponent, {
                     key: e.src,
@@ -1130,7 +1136,7 @@ module.exports = meta => {
                       const hasActive = items.some(i => i.selected);
                       return jsx('div', {
                       key: cat,
-                      className: 'BackgroundManager-categoryStack' + (hasActive ? ' has-active' : ''),
+                      className: 'DynamicBackgrounds-categoryStack' + (hasActive ? ' has-active' : ''),
                       role: 'button',
                       tabIndex: 0,
                       'aria-label': `Category ${cat}`,
@@ -1285,7 +1291,7 @@ module.exports = meta => {
                                   // Slot zu Slot - aber mit Verzoegerung, damit sie erst
                                   // nachruecken, wenn die oberste Karte angehoben ist.
                                   animation: isTraveling
-                                    ? `BackgroundManager-cardToBack ${STACK_TRAVEL_MS}ms cubic-bezier(0.33,0.02,0.28,1) forwards`
+                                    ? `DynamicBackgrounds-cardToBack ${STACK_TRAVEL_MS}ms cubic-bezier(0.33,0.02,0.28,1) forwards`
                                     : 'none',
                                   transition: isTraveling
                                     ? 'none'
@@ -1300,10 +1306,10 @@ module.exports = meta => {
                            mal lesbar, mal nicht. */
                         jsx('div', {
                           key: 'label',
-                          className: 'BackgroundManager-categoryLabel',
+                          className: 'DynamicBackgrounds-categoryLabel',
                           children: [
-                            jsx('span', { key: 'n', className: 'BackgroundManager-categoryName', children: cat }),
-                            jsx('span', { key: 'c', className: 'BackgroundManager-categoryCount', children: String(items.length) })
+                            jsx('span', { key: 'n', className: 'DynamicBackgrounds-categoryName', children: cat }),
+                            jsx('span', { key: 'c', className: 'DynamicBackgrounds-categoryCount', children: String(items.length) })
                           ]
                         })]
                     })
@@ -1552,7 +1558,7 @@ module.exports = meta => {
     return jsx(constants.nativeUI.FocusRing, null,
       jsx('div', {
         ref: wrapperRef,
-        className: 'BackgroundManager-imageWrapper' + (item.selected ? ' selected' : '') + (isDragging ? ' dragging' : '') + (isDragOver ? ' drag-over' : ''),
+        className: 'DynamicBackgrounds-imageWrapper' + (item.selected ? ' selected' : '') + (isDragging ? ' dragging' : '') + (isDragOver ? ' drag-over' : ''),
         onClick: handleImageClick,
         onMouseEnter: handlePreviewEnter,
         onMouseLeave: handlePreviewLeave,
@@ -1567,11 +1573,11 @@ module.exports = meta => {
             !loaded ? jsx(constants.nativeUI.Spinner) : error ? jsx('div', { className: constants.textStyles?.defaultColor }, 'Image could not be loaded') : jsx('img', {
             tabIndex: '-1',
             src: item.src || '',
-            className: 'BackgroundManager-image',
+            className: 'DynamicBackgrounds-image',
           }), !error ? jsx(Fragment, {
             children: [
               jsx('div', {
-                className: 'BackgroundManager-imageData',
+                className: 'DynamicBackgrounds-imageData',
                 'data-size': formatNumber(item.image.size),
                 'data-dimensions': item.width && item.height ? item.width + ' x ' + item.height : null,
                 'data-mime': item.image.type?.split('/').pop().toUpperCase() || null,
@@ -1581,7 +1587,7 @@ module.exports = meta => {
             TooltipProps: { text: item.favorite ? 'Remove favorite' : 'Mark as favorite' },
             ButtonProps: {
               onClick: handleToggleFavorite,
-              className: 'BackgroundManager-favoriteButton' + (item.favorite ? ' active' : ''),
+              className: 'DynamicBackgrounds-favoriteButton' + (item.favorite ? ' active' : ''),
             },
             SvgProps: {
               width: '16', height: '16',
@@ -1593,7 +1599,7 @@ module.exports = meta => {
             TooltipProps: { text: 'Delete image' },
             ButtonProps: {
               onClick: handleDelete,
-              className: 'BackgroundManager-deleteButton',
+              className: 'DynamicBackgrounds-deleteButton',
             },
             SvgProps: {
               width: '16', height: '16',
@@ -1710,10 +1716,10 @@ module.exports = meta => {
     useEffect(() => { dropArea.current.focus() }, []);
 
     return jsx('div', {
-      className: 'BackgroundManager-inputWrapper',
+      className: 'DynamicBackgrounds-inputWrapper',
       children: [
         jsx(constants.nativeUI.FocusRing, null, jsx('div', {
-          className: 'BackgroundManager-DropAndPasteArea',
+          className: 'DynamicBackgrounds-DropAndPasteArea',
           role: 'button',
           tabIndex: 0,
           contentEditable: 'true',
@@ -1968,7 +1974,7 @@ module.exports = meta => {
 
   function FormSwitch({ value, onChange, note, disabled, children }) {
     return jsx("div", {
-      className: ["BackgroundManager-FormSwitch", constants.textStyles?.defaultColor].filter(Boolean).join(" "),
+      className: ["DynamicBackgrounds-FormSwitch", constants.textStyles?.defaultColor].filter(Boolean).join(" "),
       children: [
         jsx("label", {
           children: [
@@ -2049,7 +2055,7 @@ module.exports = meta => {
     }));
 
     return jsx('label', {
-      className: 'BackgroundManager-FormNumberInput',
+      className: 'DynamicBackgrounds-FormNumberInput',
       children: [
         jsx("span", { className: constants.textStyles?.defaultColor }, label ?? ''),
         jsx(TextInputComponent, {
@@ -2057,7 +2063,7 @@ module.exports = meta => {
           inputRef,
           rows: 1,
           value: val,
-          className: 'BackgroundManager-NumberInput',
+          className: 'DynamicBackgrounds-NumberInput',
           onChange: handleChange,
           onBlur: handleBlur,
           onKeyDown: handleKeyDown
@@ -2067,7 +2073,7 @@ module.exports = meta => {
         defaultValue !== undefined && Number(val) !== Number(defaultValue)
           ? jsx('button', {
               type: 'button',
-              className: 'BackgroundManager-ResetButton',
+              className: 'DynamicBackgrounds-ResetButton',
               title: 'Reset to default (' + defaultValue + (suffix ? ' ' + suffix : '') + ')',
               'aria-label': 'Reset to default',
               onClick: e => {
@@ -2084,13 +2090,13 @@ module.exports = meta => {
 
   function FormSelect({ label, value, options, onChange, disabled }) {
     return jsx('label', {
-      className: 'BackgroundManager-FormSelect',
+      className: 'DynamicBackgrounds-FormSelect',
       children: [
         jsx("span", { className: constants.textStyles?.defaultColor }, label ?? ''),
         jsx('select', {
           disabled,
           value,
-          className: 'BackgroundManager-Select',
+          className: 'DynamicBackgrounds-Select',
           onChange: e => onChange(e.target.value),
           children: options.map(opt => jsx('option', { key: opt.value, value: opt.value }, opt.label))
         })
@@ -2219,7 +2225,7 @@ module.exports = meta => {
             defaultValue !== undefined && Number(textValue) !== Number(defaultValue)
               ? jsx('button', {
                   type: 'button',
-                  className: 'BackgroundManager-ResetButton',
+                  className: 'DynamicBackgrounds-ResetButton',
                   title: 'Reset to default (' + defaultValue + ')',
                   'aria-label': 'Reset to default',
                   disabled: restProps.disabled,
@@ -2238,7 +2244,7 @@ module.exports = meta => {
               inputRef,
               value: textValue,
               rows: 1,
-              className: "BackgroundManager-NumberInput",
+              className: "DynamicBackgrounds-NumberInput",
               disabled: restProps.disabled,
               id: ID,
               onChange: handleTextChange,
@@ -2470,7 +2476,7 @@ module.exports = meta => {
     return jsx(IconButton, {
       TooltipProps: { text: 'Open Settings' },
       ButtonProps: {
-        className: 'BackgroundManager-SettingsButton',
+        className: 'DynamicBackgrounds-SettingsButton',
         onClick: handleClick,
       },
       SvgProps: { path: 'M19.14 12.94c.04-.3.06-.61.06-.94 0-.32-.02-.64-.07-.94l2.03-1.58c.18-.14.23-.41.12-.61l-1.92-3.32c-.12-.22-.37-.29-.59-.22l-2.39.96c-.5-.38-1.03-.7-1.62-.94l-.36-2.54c-.04-.24-.24-.41-.48-.41h-3.84c-.24 0-.43.17-.47.41l-.36 2.54c-.59.24-1.13.57-1.62.94l-2.39-.96c-.22-.08-.47 0-.59.22L2.74 8.87c-.12.21-.08.47.12.61l2.03 1.58c-.05.3-.09.63-.09.94s.02.64.07.94l-2.03 1.58c-.18.14-.23.41-.12.61l1.92 3.32c.12.22.37.29.59.22l2.39-.96c.5.38 1.03.7 1.62.94l.36 2.54c.05.24.24.41.48.41h3.84c.24 0 .44-.17.47-.41l.36-2.54c.59-.24 1.13-.56 1.62-.94l2.39.96c.22.08.47 0 .59-.22l1.92-3.32c.12-.22.07-.47-.12-.61zM12 15.6c-1.98 0-3.6-1.62-3.6-3.6s1.62-3.6 3.6-3.6 3.6 1.62 3.6 3.6-1.62 3.6-3.6 3.6' }
@@ -2524,7 +2530,7 @@ module.exports = meta => {
     function BuildMenuItem(src) {
       return jsx(ContextMenu.Group, null, jsx(ContextMenu.Item, {
         id: 'add-Manager',
-        label: 'Add to Background Manager',
+        label: 'Add to DynamicBackgrounds',
         action: async () => {
           let mediaURL = function (src) {
             let safeURL = function (url) { try { return new URL(url) } catch (e) { return null } }(src);
@@ -2543,7 +2549,7 @@ module.exports = meta => {
             image.onload = () => setImageFromIDB(storedImages => {
               storedImages.push({ id: storedImages.length + 1, image: blub, width: image.width, height: image.height, selected: false, src: null });
               clearObjectURL(image);
-              UI.showToast("Successfully added to Background Manager", { type: 'success' });
+              UI.showToast("Successfully added to DynamicBackgrounds", { type: 'success' });
             });
             image.onerror = () => clearObjectURL(image);
             setObjectURL(image, blub);
@@ -2585,7 +2591,7 @@ module.exports = meta => {
           return args[0].src;
       })
     } catch (e) {
-      console.error('%c[BackgroundManager]%c ', e, "color:#DBDCA6;font-weight:bold", "")
+      console.error('%c[DynamicBackgrounds]%c ', e, "color:#DBDCA6;font-weight:bold", "")
     }
     // patch headerbar
     try {
@@ -2603,7 +2609,7 @@ module.exports = meta => {
           }));
       })
     } catch (e) {
-      console.error('%c[BackgroundManager] %cCould not patch the HeaderBar - the toolbar icon will not appear, but the rest of the plugin still works. Discord likely changed the internal toolbar module.', "color:#DBDCA6;font-weight:bold", "", e);
+      console.error('%c[DynamicBackgrounds] %cCould not patch the HeaderBar - the toolbar icon will not appear, but the rest of the plugin still works. Discord likely changed the internal toolbar module.', "color:#DBDCA6;font-weight:bold", "", e);
     }
     forceRerenderElement('.' + constants.toolbarClasses?.toolbar);
   }
@@ -2643,7 +2649,7 @@ module.exports = meta => {
     // remove styles
     DOM.removeStyle(meta.slug + '-style');
     DOM.removeStyle(meta.slug + '-glitch');
-    DOM.removeStyle('BackgroundManager-background');
+    DOM.removeStyle('DynamicBackgrounds-background');
     /* Zwischengespeicherte Zustaende freigeben. _cachedImages haelt sonst alle
        Bilddaten im Speicher, obwohl das Plugin aus ist. */
     constants._cachedImages = null;
@@ -2786,7 +2792,7 @@ module.exports = meta => {
 /* Chips: beschriftete Schalter fuer Zustaende und haeufige Aktionen.
    Der aktive Zustand ist am helleren Rand und Hintergrund erkennbar - genau
    das fehlte den nackten Icons. */
-.BackgroundManager-chip {
+.DynamicBackgrounds-chip {
   display: inline-flex;
   align-items: center;
   gap: 6px;
@@ -2803,20 +2809,20 @@ module.exports = meta => {
   transition: background-color 140ms ease, border-color 140ms ease, color 140ms ease, box-shadow 140ms ease;
 }
 
-.BackgroundManager-chip:hover {
+.DynamicBackgrounds-chip:hover {
   background: rgba(255, 255, 255, 0.07);
   border-color: rgba(255, 255, 255, 0.18);
   color: var(--interactive-active, #fff);
 }
 
-.BackgroundManager-toolbar {
+.DynamicBackgrounds-toolbar {
   display: flex;
   flex-direction: column;
   gap: 6px;
   margin: 8px 0;
 }
 
-.BackgroundManager-toolRow {
+.DynamicBackgrounds-toolRow {
   display: flex;
   align-items: center;
   gap: 6px;
@@ -2826,7 +2832,7 @@ module.exports = meta => {
 /* Die Ueberschrift links macht den Bezug klar. "Favorites" allein sagt nicht,
    ob damit gefiltert, markiert oder geloescht wird. Feste Breite, damit beide
    Zeilen an derselben Kante beginnen. */
-.BackgroundManager-toolLabel {
+.DynamicBackgrounds-toolLabel {
   flex: 0 0 auto;
   width: 76px;
   font-size: 11px;
@@ -2839,7 +2845,7 @@ module.exports = meta => {
 }
 
 /* Ueberlaufmenue und Einstellungen als eigene Gruppe ganz rechts. */
-.BackgroundManager-toolEnd {
+.DynamicBackgrounds-toolEnd {
   display: flex;
   align-items: center;
   gap: 4px;
@@ -2847,9 +2853,9 @@ module.exports = meta => {
   padding-left: 12px;
 }
 
-.BackgroundManager-iconButton,
-.BackgroundManager-toolEnd .BackgroundManager-quickButton,
-.BackgroundManager-toolEnd > button {
+.DynamicBackgrounds-iconButton,
+.DynamicBackgrounds-toolEnd .DynamicBackgrounds-quickButton,
+.DynamicBackgrounds-toolEnd > button {
   width: 30px;
   height: 30px;
   display: inline-flex;
@@ -2863,21 +2869,21 @@ module.exports = meta => {
   transition: background-color 140ms ease, border-color 140ms ease, color 140ms ease;
 }
 
-.BackgroundManager-iconButton:hover,
-.BackgroundManager-toolEnd > button:hover {
+.DynamicBackgrounds-iconButton:hover,
+.DynamicBackgrounds-toolEnd > button:hover {
   background: rgba(255, 255, 255, 0.07);
   border-color: rgba(255, 255, 255, 0.14);
   color: var(--interactive-active, #fff);
 }
 
-.BackgroundManager-chip.amber {
+.DynamicBackgrounds-chip.amber {
   border-color: rgba(250, 166, 26, 0.45);
   background: rgba(250, 166, 26, 0.10);
   color: #faa61a;
   box-shadow: 0 0 10px 0 rgba(250, 166, 26, 0.18);
 }
 
-.BackgroundManager-chip.active {
+.DynamicBackgrounds-chip.active {
   border-color: rgba(255, 215, 0, 0.45);
   background: rgba(255, 215, 0, 0.10);
   color: #ffd700;
@@ -2887,21 +2893,21 @@ module.exports = meta => {
 /* Kachel hebt sich beim Ueberfahren leicht an. Bewegung erzeugt mehr
    Wertigkeit als jeder Schein - und transform kostet nichts, weil es
    ausschliesslich auf der GPU laeuft. */
-.BackgroundManager-categoryStack {
+.DynamicBackgrounds-categoryStack {
   padding: 6px 6px 2px;
   border-radius: 12px;
   transition: transform 180ms cubic-bezier(0.22,0.61,0.36,1), background-color 180ms ease;
 }
 
 /* Nur Anheben, keine Hintergrundflaeche - der Rahmen wirkte unruhig. */
-.BackgroundManager-categoryStack:hover {
+.DynamicBackgrounds-categoryStack:hover {
   transform: translateY(-3px);
 }
 
 /* Die Kategorie, aus der das aktuell laufende Bild stammt. Beantwortet auf
    der Uebersicht die Frage "wo laeuft es gerade her?", ohne ein einziges
    zusaetzliches Bedienelement. */
-.BackgroundManager-categoryStack.has-active .BackgroundManager-categoryName::after {
+.DynamicBackgrounds-categoryStack.has-active .DynamicBackgrounds-categoryName::after {
   content: '';
   display: inline-block;
   width: 6px;
@@ -2913,14 +2919,14 @@ module.exports = meta => {
   box-shadow: 0 0 8px 2px rgba(255, 90, 190, 0.6);
 }
 
-.BackgroundManager-categoryStack.has-active img:last-of-type {
+.DynamicBackgrounds-categoryStack.has-active img:last-of-type {
   outline: 1px solid rgba(255, 255, 255, 0.30);
   outline-offset: -1px;
 }
 
 /* Die Karten bekommen ihren Schatten per Inline-Style aus dem JSX, und
    Inline-Styles schlagen jedes Stylesheet - daher !important. */
-.BackgroundManager-categoryStack:hover img {
+.DynamicBackgrounds-categoryStack:hover img {
   box-shadow: 0 10px 26px rgba(0, 0, 0, 0.45),
               0 0 16px 0 rgba(255, 255, 255, 0.14) !important;
 }
@@ -2928,7 +2934,7 @@ module.exports = meta => {
 /* Drop-Zone reagiert, sobald eine Datei darueber gezogen wird. Das ist
    gleichzeitig echtes Feedback ("hier kannst du loslassen") und die Stelle,
    an der ein Leuchten wirklich etwas aussagt statt nur zu dekorieren. */
-.BackgroundManager-DropAndPasteArea:is(:hover, .dragging) {
+.DynamicBackgrounds-DropAndPasteArea:is(:hover, .dragging) {
   border-color: rgba(255, 255, 255, 0.32);
   background: rgba(255, 255, 255, 0.05);
   box-shadow: 0 0 18px 0 rgba(255, 255, 255, 0.10),
@@ -2937,11 +2943,11 @@ module.exports = meta => {
 
 /* Feine Lichtkante an der Oberkante des Fensters. Kein Glow im engeren Sinn,
    aber genau das, was Glasoberflaechen hochwertig wirken laesst. */
-.BackgroundManager-popoutInner {
+.DynamicBackgrounds-popoutInner {
   position: relative;
 }
 
-.BackgroundManager-popoutInner::before {
+.DynamicBackgrounds-popoutInner::before {
   content: '';
   position: absolute;
   inset: 0 0 auto 0;
@@ -2955,7 +2961,7 @@ module.exports = meta => {
     transparent 100%);
 }
 
-.BackgroundManager-ResetButton {
+.DynamicBackgrounds-ResetButton {
   flex: 0 0 auto;
   width: 20px;
   height: 20px;
@@ -2973,15 +2979,15 @@ module.exports = meta => {
   color: var(--interactive-normal, rgba(255,255,255,0.55));
   transition: color 120ms ease, background-color 120ms ease;
 }
-.BackgroundManager-ResetButton:hover {
+.DynamicBackgrounds-ResetButton:hover {
   color: var(--interactive-active, #fff);
   background: var(--background-modifier-hover, rgba(255,255,255,0.08));
 }
-.BackgroundManager-ResetButton:disabled {
+.DynamicBackgrounds-ResetButton:disabled {
   opacity: 0.4;
   cursor: default;
 }
-.BackgroundManager-NumberInput::-webkit-scrollbar {
+.DynamicBackgrounds-NumberInput::-webkit-scrollbar {
   display: none;
 }
 /* overflow: hidden beschneidet die Hintergrundebene aufs Fenster.
@@ -3007,7 +3013,7 @@ module.exports = meta => {
   display: block;
   overflow: hidden;
 }
-.BackgroundManager-bgContainer {
+.DynamicBackgrounds-bgContainer {
   position: absolute;
   inset: 0;
   z-index: -1;
@@ -3023,15 +3029,15 @@ module.exports = meta => {
    teuerste Dauerlast im Plugin, fuer null sichtbaren Effekt.
 
    Die Attribute setzt setFxFlags(), sobald sich eine Einstellung aendert. */
-.BackgroundManager-bgContainer::after {
+.DynamicBackgrounds-bgContainer::after {
   content: '';
   position: absolute;
   inset: 0;
 }
-.BackgroundManager-bgContainer[data-blur]::after {
+.DynamicBackgrounds-bgContainer[data-blur]::after {
   backdrop-filter: blur(var(--BgManager-blur, 0px));
 }
-.BackgroundManager-bg {
+.DynamicBackgrounds-bg {
   position: absolute;
   inset: 0;
   opacity: 0;
@@ -3051,7 +3057,7 @@ module.exports = meta => {
   transition-property: opacity, transform, filter;
   transform: scale(1) translateX(0);
 }
-.BackgroundManager-bgContainer[data-fx] .BackgroundManager-bg {
+.DynamicBackgrounds-bgContainer[data-fx] .DynamicBackgrounds-bg {
   filter: grayscale(var(--BgManager-grayscale, 0%)) contrast(var(--BgManager-contrast, 100%)) saturate(var(--BgManager-saturation, 100%));
 }
 
@@ -3059,103 +3065,103 @@ module.exports = meta => {
    eines Bildwechsels gebraucht - dort sorgt es dafuer, dass die Ueberblendung
    nicht durchhaengt. Im Ruhezustand liegt ohnehin nur eine Ebene sichtbar
    uebereinander, dann ist es reine Last. */
-.BackgroundManager-bgContainer[data-fading] .BackgroundManager-bg {
+.DynamicBackgrounds-bgContainer[data-fading] .DynamicBackgrounds-bg {
   mix-blend-mode: plus-lighter;
 }
 
 /* Die inaktive Ebene wird ausser waehrend eines Wechsels gar nicht gebraucht.
    Bei opacity: 0 zeichnet der Browser sie zwar nicht, haelt aber Ebene und
    Filter vor. visibility nimmt sie vollstaendig aus dem Rendering. */
-.BackgroundManager-bgContainer:not([data-fading]) .BackgroundManager-bg:not(.active) {
+.DynamicBackgrounds-bgContainer:not([data-fading]) .DynamicBackgrounds-bg:not(.active) {
   visibility: hidden;
 }
-.BackgroundManager-bg.active {
+.DynamicBackgrounds-bg.active {
   opacity: 1;
 }
 /* ============================================================================
    ÜBERGÄNGE  (data-transition, laufen EINMAL beim Bildwechsel)
    ----------------------------------------------------------------------------
    Alle nutzen --BgManager-transition-duration, respektieren also die
-   eingestellte Dauer. Sie liegen auf .BackgroundManager-bg, den beiden
+   eingestellte Dauer. Sie liegen auf .DynamicBackgrounds-bg, den beiden
    Bildebenen. Dauereffekte liegen dagegen auf dem Container - so kommen sich
    die beiden transform-Ketten nicht in die Quere.
    ========================================================================= */
 
-.BackgroundManager-bgContainer[data-transition="fade"] .BackgroundManager-bg {
+.DynamicBackgrounds-bgContainer[data-transition="fade"] .DynamicBackgrounds-bg {
   transition-property: opacity;
 }
 
-.BackgroundManager-bgContainer[data-transition="slide"] .BackgroundManager-bg {
+.DynamicBackgrounds-bgContainer[data-transition="slide"] .DynamicBackgrounds-bg {
   transform: translateX(-100%);
 }
-.BackgroundManager-bgContainer[data-transition="slide"] .BackgroundManager-bg.active {
+.DynamicBackgrounds-bgContainer[data-transition="slide"] .DynamicBackgrounds-bg.active {
   transform: translateX(0);
 }
 
-.BackgroundManager-bgContainer[data-transition="slideup"] .BackgroundManager-bg {
+.DynamicBackgrounds-bgContainer[data-transition="slideup"] .DynamicBackgrounds-bg {
   transform: translateY(100%);
 }
-.BackgroundManager-bgContainer[data-transition="slideup"] .BackgroundManager-bg.active {
+.DynamicBackgrounds-bgContainer[data-transition="slideup"] .DynamicBackgrounds-bg.active {
   transform: translateY(0);
 }
 
-.BackgroundManager-bgContainer[data-transition="zoom"] .BackgroundManager-bg {
+.DynamicBackgrounds-bgContainer[data-transition="zoom"] .DynamicBackgrounds-bg {
   transform: scale(1.25);
 }
-.BackgroundManager-bgContainer[data-transition="zoom"] .BackgroundManager-bg.active {
+.DynamicBackgrounds-bgContainer[data-transition="zoom"] .DynamicBackgrounds-bg.active {
   transform: scale(1);
 }
 
-.BackgroundManager-bgContainer[data-transition="zoomout"] .BackgroundManager-bg {
+.DynamicBackgrounds-bgContainer[data-transition="zoomout"] .DynamicBackgrounds-bg {
   transform: scale(0.75);
 }
-.BackgroundManager-bgContainer[data-transition="zoomout"] .BackgroundManager-bg.active {
+.DynamicBackgrounds-bgContainer[data-transition="zoomout"] .DynamicBackgrounds-bg.active {
   transform: scale(1);
 }
 
 /* Die Filter-Kette wird komplett neu geschrieben, weil filter keine einzelnen
    Funktionen ueberschreiben kann. Die Regler-Variablen muessen deshalb mit. */
-.BackgroundManager-bgContainer[data-transition="blur"] .BackgroundManager-bg {
+.DynamicBackgrounds-bgContainer[data-transition="blur"] .DynamicBackgrounds-bg {
   filter: grayscale(var(--BgManager-grayscale, 0%)) contrast(var(--BgManager-contrast, 100%)) saturate(var(--BgManager-saturation, 100%)) blur(24px);
 }
-.BackgroundManager-bgContainer[data-transition="blur"] .BackgroundManager-bg.active {
+.DynamicBackgrounds-bgContainer[data-transition="blur"] .DynamicBackgrounds-bg.active {
   filter: grayscale(var(--BgManager-grayscale, 0%)) contrast(var(--BgManager-contrast, 100%)) saturate(var(--BgManager-saturation, 100%)) blur(0px);
 }
 
 /* Drehen plus Zoom. Ein echter Wuerfel braeuchte zwei Flaechen mit
    preserve-3d, es gibt aber nur eine Ebene. */
-.BackgroundManager-bgContainer[data-transition="spin"] .BackgroundManager-bg {
+.DynamicBackgrounds-bgContainer[data-transition="spin"] .DynamicBackgrounds-bg {
   transform: rotate(-14deg) scale(1.4);
 }
-.BackgroundManager-bgContainer[data-transition="spin"] .BackgroundManager-bg.active {
+.DynamicBackgrounds-bgContainer[data-transition="spin"] .DynamicBackgrounds-bg.active {
   transform: rotate(0deg) scale(1);
 }
 
 /* Oeffnet aus der Mitte. transition-property muss opacity mitfuehren, sonst
    verschwindet das alte Bild schlagartig. */
-.BackgroundManager-bgContainer[data-transition="curtain"] .BackgroundManager-bg {
+.DynamicBackgrounds-bgContainer[data-transition="curtain"] .DynamicBackgrounds-bg {
   clip-path: inset(0 50% 0 50%);
   transition-property: opacity, clip-path;
 }
-.BackgroundManager-bgContainer[data-transition="curtain"] .BackgroundManager-bg.active {
+.DynamicBackgrounds-bgContainer[data-transition="curtain"] .DynamicBackgrounds-bg.active {
   clip-path: inset(0 0 0 0);
 }
 
 /* clip-path statt Maske: exakt, und nutzt die eingestellte Dauer. */
-.BackgroundManager-bgContainer[data-transition="wipe"] .BackgroundManager-bg {
+.DynamicBackgrounds-bgContainer[data-transition="wipe"] .DynamicBackgrounds-bg {
   clip-path: inset(0 100% 0 0);
   transition-property: opacity, clip-path;
 }
-.BackgroundManager-bgContainer[data-transition="wipe"] .BackgroundManager-bg.active {
+.DynamicBackgrounds-bgContainer[data-transition="wipe"] .DynamicBackgrounds-bg.active {
   clip-path: inset(0 0 0 0);
 }
 
 /* Neu: Blende, wie bei einer Kamera. */
-.BackgroundManager-bgContainer[data-transition="iris"] .BackgroundManager-bg {
+.DynamicBackgrounds-bgContainer[data-transition="iris"] .DynamicBackgrounds-bg {
   clip-path: circle(0% at 50% 50%);
   transition-property: opacity, clip-path;
 }
-.BackgroundManager-bgContainer[data-transition="iris"] .BackgroundManager-bg.active {
+.DynamicBackgrounds-bgContainer[data-transition="iris"] .DynamicBackgrounds-bg.active {
   clip-path: circle(80% at 50% 50%);
 }
 
@@ -3173,7 +3179,7 @@ module.exports = meta => {
    Also 100% = Grunddauer, 200% = doppelt so schnell, 50% = halb so schnell.
    calc() darf <time> mit einer Zahl multiplizieren - so wirkt ein einziger
    Regler auf alle Dauereffekte, ohne dass jeder eigene Werte braucht. */
-.BackgroundManager-bgContainer[data-ambient="kenburns"] {
+.DynamicBackgrounds-bgContainer[data-ambient="kenburns"] {
   animation: bm-kenburns calc(40s * var(--BgManager-ambient-factor, 1)) ease-in-out infinite;
 }
 @keyframes bm-kenburns {
@@ -3184,7 +3190,7 @@ module.exports = meta => {
 
 /* transform statt background-position: laesst die X/Y-Regler in Ruhe und
    ist deutlich guenstiger. */
-.BackgroundManager-bgContainer[data-ambient="drift"] {
+.DynamicBackgrounds-bgContainer[data-ambient="drift"] {
   animation: bm-drift calc(26s * var(--BgManager-ambient-factor, 1)) ease-in-out infinite;
 }
 @keyframes bm-drift {
@@ -3193,7 +3199,7 @@ module.exports = meta => {
   100% { transform: scale(1.05) translate3d(-1.2%, 0, 0); }
 }
 
-.BackgroundManager-bgContainer[data-ambient="pulse"] {
+.DynamicBackgrounds-bgContainer[data-ambient="pulse"] {
   animation: bm-pulse calc(14s * var(--BgManager-ambient-factor, 1)) ease-in-out infinite;
 }
 @keyframes bm-pulse {
@@ -3202,7 +3208,7 @@ module.exports = meta => {
 }
 
 /* Gelegentlicher Ruck, kein Dauerzucken. */
-.BackgroundManager-bgContainer[data-ambient="glitch"] {
+.DynamicBackgrounds-bgContainer[data-ambient="glitch"] {
   animation: bm-glitch calc(6s * var(--BgManager-ambient-factor, 1)) steps(1) infinite;
 }
 /* Die Keyframes fuer bm-glitch stehen NICHT hier, sondern werden von
@@ -3215,8 +3221,8 @@ module.exports = meta => {
 
 /* Koernung und Scanlines liegen auf ::before. ::after ist schon vom
    Hintergrund-Blur belegt. z-index hebt sie ueber die Bildebenen. */
-.BackgroundManager-bgContainer[data-ambient="grain"]::before,
-.BackgroundManager-bgContainer[data-ambient="scanlines"]::before {
+.DynamicBackgrounds-bgContainer[data-ambient="grain"]::before,
+.DynamicBackgrounds-bgContainer[data-ambient="scanlines"]::before {
   content: '';
   position: absolute;
   inset: 0;
@@ -3225,7 +3231,7 @@ module.exports = meta => {
 }
 
 /* Deckkraft bewusst hoch genug, um wahrgenommen zu werden. */
-.BackgroundManager-bgContainer[data-ambient="grain"]::before {
+.DynamicBackgrounds-bgContainer[data-ambient="grain"]::before {
   background-image:
     radial-gradient(rgba(255,255,255,0.55) 0.5px, transparent 0.6px),
     radial-gradient(rgba(0,0,0,0.45) 0.5px, transparent 0.6px);
@@ -3243,7 +3249,7 @@ module.exports = meta => {
   100% { background-position: 0 0, 1px 2px; }
 }
 
-.BackgroundManager-bgContainer[data-ambient="scanlines"]::before {
+.DynamicBackgrounds-bgContainer[data-ambient="scanlines"]::before {
   background-image: repeating-linear-gradient(
     to bottom,
     rgba(0,0,0,0.22) 0 1px,
@@ -3259,15 +3265,15 @@ module.exports = meta => {
 
 /* Wer Bewegung nicht mag, bekommt die Dauereffekte ohne Animation. */
 @media (prefers-reduced-motion: reduce) {
-  .BackgroundManager-bgContainer[data-ambient] { animation: none !important; }
-  .BackgroundManager-bgContainer[data-ambient]::before { animation: none !important; }
+  .DynamicBackgrounds-bgContainer[data-ambient] { animation: none !important; }
+  .DynamicBackgrounds-bgContainer[data-ambient]::before { animation: none !important; }
 }
 
 @keyframes fade-in {
   0% { opacity: 0; }
   100% { opacity: 1; }
 }
-.BackgroundManager-FormSwitch {
+.DynamicBackgrounds-FormSwitch {
   display: grid;
   grid-template-columns: 1fr auto auto auto;
   align-items: center;
@@ -3282,7 +3288,7 @@ module.exports = meta => {
     pointer-events: none;
   }
 }
-.BackgroundManager-FormNumberInput {
+.DynamicBackgrounds-FormNumberInput {
   display: grid;
   grid-template-columns: 1fr 100px auto;
   align-items: center;
@@ -3292,7 +3298,7 @@ module.exports = meta => {
     opacity: 0.5;
   }
 }
-.BackgroundManager-FormSelect {
+.DynamicBackgrounds-FormSelect {
   display: grid;
   grid-template-columns: 1fr auto;
   align-items: center;
@@ -3303,7 +3309,7 @@ module.exports = meta => {
     pointer-events: none;
   }
 }
-.BackgroundManager-Select {
+.DynamicBackgrounds-Select {
   padding: 8px 12px;
   border-radius: 4px;
   background-color: var(--background-secondary, #2f3136);
@@ -3319,33 +3325,33 @@ module.exports = meta => {
   background-size: 5px 5px, 5px 5px;
   background-repeat: no-repeat;
 }
-.BackgroundManager-Select:hover {
+.DynamicBackgrounds-Select:hover {
   background-color: var(--background-tertiary, #36393f);
 }
-.BackgroundManager-Select:focus {
+.DynamicBackgrounds-Select:focus {
   outline: 2px solid var(--focus-primary, #00aff4);
 }
-.BackgroundManager-Select option {
+.DynamicBackgrounds-Select option {
   background-color: var(--background-secondary, #2f3136) !important;
   color: var(--text-normal, #dcddde) !important;
 }
-.BackgroundManager-head { display: flex; align-items: center; gap: 8px; }
-.BackgroundManager-head h1 { flex: 1; margin: 0; }
-.BackgroundManager-head .BackgroundManager-SettingsButton { margin-left: auto; }
-.BackgroundManager-quickRow .BackgroundManager-SettingsButton { margin-left: auto; }
-.BackgroundManager-NumberInput {
+.DynamicBackgrounds-head { display: flex; align-items: center; gap: 8px; }
+.DynamicBackgrounds-head h1 { flex: 1; margin: 0; }
+.DynamicBackgrounds-head .DynamicBackgrounds-SettingsButton { margin-left: auto; }
+.DynamicBackgrounds-quickRow .DynamicBackgrounds-SettingsButton { margin-left: auto; }
+.DynamicBackgrounds-NumberInput {
   white-space: nowrap;
   padding-block: 0.25rem;
   text-align: right;
 }
-.BackgroundManager-inputWrapper {
+.DynamicBackgrounds-inputWrapper {
   display: grid;
   grid-template-columns: 1fr auto auto auto;
   padding: 0.5rem 0.75rem 0.5rem 0.25rem;
   gap: 0.5rem;
   align-items: center;
 }
-.BackgroundManager-DropAndPasteArea {
+.DynamicBackgrounds-DropAndPasteArea {
   position: relative;
   display: grid;
   align-items: center;
@@ -3364,10 +3370,10 @@ module.exports = meta => {
   background-repeat: no-repeat;
   background-position: center 18px;
 }
-.BackgroundManager-DropAndPasteArea:is(:focus, .dragging, :focus-visible)::before {
+.DynamicBackgrounds-DropAndPasteArea:is(:focus, .dragging, :focus-visible)::before {
   opacity: 1;
 }
-  .BackgroundManager-DropAndPasteArea::before {
+  .DynamicBackgrounds-DropAndPasteArea::before {
   content: 'Drop image here or click to upload';
   position: absolute;
   display: grid;
@@ -3386,26 +3392,26 @@ module.exports = meta => {
   background: transparent;
   transition: transform 180ms ease, opacity 160ms ease;
 }
-.BackgroundManager-DropAndPasteArea:hover::before { transform: translateY(-2px); }
-.BackgroundManager-DropAndPasteArea .drag-icon { display: none; }
+.DynamicBackgrounds-DropAndPasteArea:hover::before { transform: translateY(-2px); }
+.DynamicBackgrounds-DropAndPasteArea .drag-icon { display: none; }
 @media (max-width: 700px) {
-  .BackgroundManager-DropAndPasteArea { min-height: 56px; padding: 8px; }
-  .BackgroundManager-DropAndPasteArea::before { font-size: 0.8rem; }
+  .DynamicBackgrounds-DropAndPasteArea { min-height: 56px; padding: 8px; }
+  .DynamicBackgrounds-DropAndPasteArea::before { font-size: 0.8rem; }
 }
-.BackgroundManager-UploadButton {color: var(--green-430); }
-.BackgroundManager-UploadButton:is(:hover, :focus-visible) { color: var(--green-500); }
-.BackgroundManager-UploadButton:active { color: var(--green-530); }
-.BackgroundManager-SettingsButton { color: rgba(255,255,255,0.92); }
-.BackgroundManager-SettingsButton:is(:hover, :focus-visible) { color: rgba(255,255,255,0.98); }
-.BackgroundManager-SettingsButton:active { color: rgba(255,255,255,1); }
-.BackgroundManager-RemoveBgButton { color: var(--red-430); }
-.BackgroundManager-RemoveBgButton:is(:hover, :focus-visible) { color: var(--red-500); }
-.BackgroundManager-RemoveBgButton:active { color: var(--red-530); }
+.DynamicBackgrounds-UploadButton {color: var(--green-430); }
+.DynamicBackgrounds-UploadButton:is(:hover, :focus-visible) { color: var(--green-500); }
+.DynamicBackgrounds-UploadButton:active { color: var(--green-530); }
+.DynamicBackgrounds-SettingsButton { color: rgba(255,255,255,0.92); }
+.DynamicBackgrounds-SettingsButton:is(:hover, :focus-visible) { color: rgba(255,255,255,0.98); }
+.DynamicBackgrounds-SettingsButton:active { color: rgba(255,255,255,1); }
+.DynamicBackgrounds-RemoveBgButton { color: var(--red-430); }
+.DynamicBackgrounds-RemoveBgButton:is(:hover, :focus-visible) { color: var(--red-500); }
+.DynamicBackgrounds-RemoveBgButton:active { color: var(--red-530); }
 
-.BackgroundManager-UploadButton,
-.BackgroundManager-SettingsButton,
-.BackgroundManager-nextButton,
-.BackgroundManager-RemoveBgButton {
+.DynamicBackgrounds-UploadButton,
+.DynamicBackgrounds-SettingsButton,
+.DynamicBackgrounds-nextButton,
+.DynamicBackgrounds-RemoveBgButton {
   display: grid;
   place-items: center;
   padding: 0.25rem;
@@ -3414,7 +3420,7 @@ module.exports = meta => {
   border-radius: 0.25rem;
   transition: color 200ms cubic-bezier(0.4, 0, 0.2, 1);
 }
-.BackgroundManager-imageWrapper {
+.DynamicBackgrounds-imageWrapper {
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -3429,20 +3435,20 @@ module.exports = meta => {
   transition: outline-color 400ms cubic-bezier(0.4, 0, 0.2, 1), transform 200ms ease;
   cursor: grab;
 }
-.BackgroundManager-imageWrapper:active {
+.DynamicBackgrounds-imageWrapper:active {
   cursor: grabbing;
 }
-.BackgroundManager-imageWrapper.dragging {
+.DynamicBackgrounds-imageWrapper.dragging {
   opacity: 0.5;
   transform: scale(0.95);
 }
-.BackgroundManager-imageWrapper.drag-over {
+.DynamicBackgrounds-imageWrapper.drag-over {
   outline-color: var(--green-430, #43b581);
   transform: scale(1.02);
 }
 /* Das aktive Bild. Weiss und niedrig deckend statt farbig, damit es ueber
    jedem Motiv funktioniert. */
-.BackgroundManager-imageWrapper.selected {
+.DynamicBackgrounds-imageWrapper.selected {
   outline-color: rgba(255, 255, 255, 0.55);
   box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.25),
               0 0 14px 2px rgba(255, 255, 255, 0.16);
@@ -3451,27 +3457,27 @@ module.exports = meta => {
 /* Feine Lichtkante beim Ueberfahren. Kein farbiger Schein, sondern Licht,
    das auf eine Kante faellt - das ist der Unterschied zwischen hochwertig
    und Neon. */
-.BackgroundManager-imageWrapper:hover {
+.DynamicBackgrounds-imageWrapper:hover {
   box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.18),
               0 0 10px 0 rgba(255, 255, 255, 0.10);
 }
 
 /* Der Favoriten-Stern glueht warm, wenn er gesetzt ist. Nur auf dem Symbol,
    nicht auf der Flaeche. */
-.BackgroundManager-favoriteButton.active svg {
+.DynamicBackgrounds-favoriteButton.active svg {
   filter: drop-shadow(0 0 4px rgba(255, 193, 7, 0.75));
 }
-.BackgroundManager-image {
+.DynamicBackgrounds-image {
   object-fit: cover;
   min-height: 100%;
   min-width: 100%;
   animation: fade-in 250ms cubic-bezier(0.4, 0, 0.2, 1);
 }
-.BackgroundManager-imageWrapper:hover > .BackgroundManager-deleteButton,
-.BackgroundManager-deleteButton:focus-visible {
+.DynamicBackgrounds-imageWrapper:hover > .DynamicBackgrounds-deleteButton,
+.DynamicBackgrounds-deleteButton:focus-visible {
   opacity: 1;
 }
-.BackgroundManager-imageData {
+.DynamicBackgrounds-imageData {
   position: absolute;
   inset: auto 0 0;
   display: flex;
@@ -3481,18 +3487,18 @@ module.exports = meta => {
   color: rgba(255, 255, 255, 0.6667);
   background: linear-gradient(#0000, rgba(25, 25, 25, 0.8) .175rem) no-repeat;
 }
-.BackgroundManager-imageData::before {
+.DynamicBackgrounds-imageData::before {
   content: 'SIZE: 'attr(data-size)'';
 }
-.BackgroundManager-imageData[data-dimensions]::after {
+.DynamicBackgrounds-imageData[data-dimensions]::after {
   content: attr(data-dimensions);
 }
-.BackgroundManager-imageWrapper:is(:hover, :focus-visible, :focus-within) .BackgroundManager-imageData[data-mime]::after,
-.BackgroundManager-imageData[data-mime]:not([data-dimensions])::after {
+.DynamicBackgrounds-imageWrapper:is(:hover, :focus-visible, :focus-within) .DynamicBackgrounds-imageData[data-mime]::after,
+.DynamicBackgrounds-imageData[data-mime]:not([data-dimensions])::after {
   content: attr(data-mime);
   font-family: 'gg mono';
 }
-.BackgroundManager-favoriteButton {
+.DynamicBackgrounds-favoriteButton {
   display: flex;
   position: absolute;
   inset: 3px auto auto 3px;
@@ -3504,19 +3510,19 @@ module.exports = meta => {
   color: #fff;
   transition: background-color 150ms cubic-bezier(0.4, 0, 0.2, 1), opacity 250ms cubic-bezier(0.4, 0, 0.2, 1), color 150ms ease;
 }
-.BackgroundManager-favoriteButton.active {
+.DynamicBackgrounds-favoriteButton.active {
   opacity: 1;
   color: #ffc107;
   background-color: rgba(0, 0, 0, 0.7);
 }
-.BackgroundManager-favoriteButton:is(:hover, :focus-visible) {
+.DynamicBackgrounds-favoriteButton:is(:hover, :focus-visible) {
   background-color: rgba(0, 0, 0, 0.8);
   color: #ffc107;
 }
-.BackgroundManager-imageWrapper:hover > .BackgroundManager-favoriteButton {
+.DynamicBackgrounds-imageWrapper:hover > .DynamicBackgrounds-favoriteButton {
   opacity: 1;
 }
-.BackgroundManager-deleteButton {
+.DynamicBackgrounds-deleteButton {
   display: flex;
   position: absolute;
   inset: 3px 3px auto auto;
@@ -3528,16 +3534,16 @@ module.exports = meta => {
   color: #fff;
   transition: background-color 150ms cubic-bezier(0.4, 0, 0.2, 1), opacity 250ms cubic-bezier(0.4, 0, 0.2, 1);
 }
-.BackgroundManager-deleteButton:is(:hover, :focus-visible) {
+.DynamicBackgrounds-deleteButton:is(:hover, :focus-visible) {
   background-color: #d15353; 
 }
-.BackgroundManager-quickButtons {
+.DynamicBackgrounds-quickButtons {
   display: flex;
   gap: 4px;
   padding: 8px;
   justify-content: flex-start;
 }
-.BackgroundManager-quickButton {
+.DynamicBackgrounds-quickButton {
   display: flex;
   align-items: center;
   justify-content: center;
@@ -3550,21 +3556,21 @@ module.exports = meta => {
   cursor: pointer;
   transition: color 150ms ease, background-color 150ms ease;
 }
-.BackgroundManager-quickButton:hover {
+.DynamicBackgrounds-quickButton:hover {
   background-color: var(--background-modifier-active);
   color: var(--interactive-hover);
 }
-.BackgroundManager-quickButton.active {
+.DynamicBackgrounds-quickButton.active {
   color: #ffc107;
   background-color: var(--background-modifier-selected);
 }
-.BackgroundManager-categoryBar {
+.DynamicBackgrounds-categoryBar {
   display: flex;
   gap: 8px;
   padding: 8px 12px;
   align-items: center;
 }
-.BackgroundManager-categorySelect {
+.DynamicBackgrounds-categorySelect {
   flex: 1;
   padding: 6px 10px;
   border-radius: 4px;
@@ -3575,13 +3581,13 @@ module.exports = meta => {
   cursor: pointer;
   outline: none;
 }
-.BackgroundManager-categorySelect:hover {
+.DynamicBackgrounds-categorySelect:hover {
   background: var(--background-modifier-hover);
 }
-.BackgroundManager-categorySelect:focus {
+.DynamicBackgrounds-categorySelect:focus {
   box-shadow: 0 0 0 2px var(--focus-primary);
 }
-.BackgroundManager-categoryButton {
+.DynamicBackgrounds-categoryButton {
   display: flex;
   align-items: center;
   justify-content: center;
@@ -3595,22 +3601,22 @@ module.exports = meta => {
   cursor: pointer;
   transition: background-color 150ms ease;
 }
-.BackgroundManager-categoryButton:hover {
+.DynamicBackgrounds-categoryButton:hover {
   background: var(--background-modifier-hover);
 }
-.BackgroundManager-categoryButton.delete {
+.DynamicBackgrounds-categoryButton.delete {
   background: #c62828;
   color: #fff;
 }
-.BackgroundManager-categoryButton.delete:hover {
+.DynamicBackgrounds-categoryButton.delete:hover {
   background: #d15353;
 }
-.BackgroundManager-categoryInputRow {
+.DynamicBackgrounds-categoryInputRow {
   display: flex;
   gap: 8px;
   padding: 0 12px 8px;
 }
-.BackgroundManager-categoryInput {
+.DynamicBackgrounds-categoryInput {
   flex: 1;
   padding: 6px 10px;
   border-radius: 4px;
@@ -3620,10 +3626,10 @@ module.exports = meta => {
   font-size: 14px;
   outline: none;
 }
-.BackgroundManager-categoryInput:focus {
+.DynamicBackgrounds-categoryInput:focus {
   box-shadow: 0 0 0 2px var(--focus-primary);
 }
-.BackgroundManager-gridWrapper {
+.DynamicBackgrounds-gridWrapper {
   display: flex;
   flex-wrap: wrap;
   gap: .5rem;
@@ -3635,14 +3641,14 @@ module.exports = meta => {
   mask-image: linear-gradient(#0000, #000 0.5rem, #000 calc(100% - 0.5rem), #0000 100%), linear-gradient(to left, #000 0.75rem, #0000 0.75rem);
 }
 
-.BackgroundManager-popoutWrap {
+.DynamicBackgrounds-popoutWrap {
   display: flex;
   align-items: flex-start;
   /* align to the right to match the Popout's align:'right' anchoring instead of centering,
      which was fighting the actual anchor position and causing the backdrop to render off to one side */
   justify-content: flex-end;
   padding: 12px 12px 8px 12px;
-  /* Only the visible card (.BackgroundManager-popoutInner) should catch clicks. The wrap itself
+  /* Only the visible card (.DynamicBackgrounds-popoutInner) should catch clicks. The wrap itself
      can end up overlapping the toolbar icon above it; making it click-through here means the icon
      stays clickable (to close the popout) even where the wrap's invisible bounding box covers it. */
   pointer-events: none;
@@ -3652,12 +3658,12 @@ module.exports = meta => {
 /* Safety net: Discord's own messagesPopoutWrap-xxxx class (still applied alongside ours for
    positioning/behavior compatibility) may carry its own background/shadow/backdrop-filter that
    would otherwise show through unpredictably. Force it off so only our own card renders visually. */
-.BackgroundManager-popoutWrap[class*="messagesPopoutWrap"] {
+.DynamicBackgrounds-popoutWrap[class*="messagesPopoutWrap"] {
   background: none !important;
   box-shadow: none !important;
   backdrop-filter: none !important;
 }
-.BackgroundManager-popoutInner {
+.DynamicBackgrounds-popoutInner {
   width: min(760px, 92vw);
   max-height: min(calc(100vh - 96px), 80vh);
   background: rgba(18,18,18,0.78);
@@ -3671,14 +3677,14 @@ module.exports = meta => {
   pointer-events: auto;
 }
 
-.BackgroundManager-popoutInner > .messagesPopoutWrap {
+.DynamicBackgrounds-popoutInner > .messagesPopoutWrap {
   display: flex;
   flex-direction: column;
   gap: 8px;
   height: auto;
 }
 
-.BackgroundManager-gridWrapper {
+.DynamicBackgrounds-gridWrapper {
   flex: 1 1 auto;
   overflow: auto; /* gallery/groups area scrolls */
   max-height: min(calc(100vh - 216px), 60vh); /* leave space for header and controls, scaled with viewport instead of a fixed offset */
@@ -3692,26 +3698,26 @@ module.exports = meta => {
 }
 
 /* Restore gaps and reserve image height to avoid layout shifts */
-.BackgroundManager-gridWrapper > .BackgroundManager-grid {
+.DynamicBackgrounds-gridWrapper > .DynamicBackgrounds-grid {
   display: grid;
   grid-template-columns: repeat(3, 1fr);
   gap: 12px;
   align-items: start;
 }
 
-.BackgroundManager-gridWrapper > * {
+.DynamicBackgrounds-gridWrapper > * {
   padding: 6px;
   box-sizing: border-box;
   min-height: 100px;
   margin-bottom: 12px;
 }
 
-.BackgroundManager-gridWrapper .BackgroundManager-group,
-.BackgroundManager-gridWrapper .BackgroundManager-item {
+.DynamicBackgrounds-gridWrapper .DynamicBackgrounds-group,
+.DynamicBackgrounds-gridWrapper .DynamicBackgrounds-item {
   min-height: 110px;
 }
 
-.BackgroundManager-gridWrapper img {
+.DynamicBackgrounds-gridWrapper img {
   width: 100%;
   height: 110px;
   object-fit: cover;
@@ -3731,7 +3737,7 @@ module.exports = meta => {
      100% unten eingereiht, blendet aus
 
    Ausgeblendet wird erst ab 78%, damit der Weg wirklich sichtbar ist. */
-@keyframes BackgroundManager-cardToBack {
+@keyframes DynamicBackgrounds-cardToBack {
   0% {
     transform: translate3d(calc(-50% + var(--bm-x-from)), var(--bm-y-from), 0) rotate(0deg) scale(1);
     opacity: 1;
@@ -3766,7 +3772,7 @@ module.exports = meta => {
 }
 
 /* Stack GPU hints to reduce animation jank */
-.BackgroundManager-categoryStack img {
+.DynamicBackgrounds-categoryStack img {
   will-change: transform;
   backface-visibility: hidden;
   -webkit-backface-visibility: hidden;
@@ -3775,20 +3781,20 @@ module.exports = meta => {
 
 /* :first-child ist wichtig - das Label ist ein zweites > div und darf die
    erzwungene Hoehe nicht bekommen. */
-.BackgroundManager-categoryStack > div:first-child {
+.DynamicBackgrounds-categoryStack > div:first-child {
   height: 176px !important;
   padding-bottom: 0 !important;
   box-sizing: border-box;
   pointer-events: none; /* Klicks sollen die Kachel treffen, nicht das Einzelbild */
 }
 
-.BackgroundManager-categoryStack img {
+.DynamicBackgrounds-categoryStack img {
   width: 190px !important;
   height: 120px !important;
   object-fit: cover;
 }
 
-.BackgroundManager-categoryStack {
+.DynamicBackgrounds-categoryStack {
   position: relative;
   overflow: visible;   /* die Faecherung darf seitlich ueberstehen */
   min-height: 0;
@@ -3796,10 +3802,10 @@ module.exports = meta => {
   border-radius: 10px;
 }
 
-.BackgroundManager-categoryStack img { pointer-events: auto; }
+.DynamicBackgrounds-categoryStack img { pointer-events: auto; }
 
 /* Name und Anzahl unter dem Stapel, dauerhaft sichtbar. */
-.BackgroundManager-categoryLabel {
+.DynamicBackgrounds-categoryLabel {
   display: flex;
   align-items: baseline;
   justify-content: space-between;
@@ -3810,49 +3816,49 @@ module.exports = meta => {
   line-height: 1.3;
 }
 
-.BackgroundManager-categoryName {
+.DynamicBackgrounds-categoryName {
   color: var(--text-normal, rgba(255,255,255,0.9));
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-.BackgroundManager-categoryCount {
+.DynamicBackgrounds-categoryCount {
   flex: 0 0 auto;
   font-variant-numeric: tabular-nums;
   color: var(--text-muted, rgba(255,255,255,0.45));
 }
 
-.BackgroundManager-categoryStack:hover .BackgroundManager-categoryName {
+.DynamicBackgrounds-categoryStack:hover .DynamicBackgrounds-categoryName {
   color: var(--interactive-active, #fff);
 }
 
 /* Make stacks keyboard-focusable and show label on focus */
-.BackgroundManager-categoryStack:focus {
+.DynamicBackgrounds-categoryStack:focus {
   outline: 2px solid var(--focus-primary, rgba(0,170,255,0.9));
   outline-offset: 2px;
 }
 
-BackgroundManager-gridWrapper::-webkit-scrollbar,
-.BackgroundManager-gridWrapper::-webkit-scrollbar-thumb,
-.BackgroundManager-gridWrapper::-webkit-scrollbar-track {
+DynamicBackgrounds-gridWrapper::-webkit-scrollbar,
+.DynamicBackgrounds-gridWrapper::-webkit-scrollbar-thumb,
+.DynamicBackgrounds-gridWrapper::-webkit-scrollbar-track {
 }
 
  
 
-.BackgroundManager-gridWrapper::-webkit-scrollbar {
+.DynamicBackgrounds-gridWrapper::-webkit-scrollbar {
   width: 10px;
 }
-.BackgroundManager-gridWrapper::-webkit-scrollbar-track {
+.DynamicBackgrounds-gridWrapper::-webkit-scrollbar-track {
   background: rgba(0,0,0,0.12);
   border-radius: 10px;
 }
-.BackgroundManager-gridWrapper::-webkit-scrollbar-thumb {
+.DynamicBackgrounds-gridWrapper::-webkit-scrollbar-thumb {
   background: rgba(255,255,255,0.06);
   border-radius: 10px;
   border: 2px solid rgba(0,0,0,0.18);
 }
-.BackgroundManager-gridWrapper::-webkit-scrollbar-thumb:hover {
+.DynamicBackgrounds-gridWrapper::-webkit-scrollbar-thumb:hover {
   background: rgba(255,255,255,0.12);
 }
 `);
@@ -3962,7 +3968,7 @@ BackgroundManager-gridWrapper::-webkit-scrollbar,
       }
     });
     const node = element instanceof HTMLElement ? element : document.querySelector(element);
-    node ? forceFullRerender(BdApi.ReactUtils.getInternalInstance(node)) : console.warn('%c[BackgroundManager] %cCould not rerender element', "color:#DBDCA6;font-weight:bold", "");
+    node ? forceFullRerender(BdApi.ReactUtils.getInternalInstance(node)) : console.warn('%c[DynamicBackgrounds] %cCould not rerender element', "color:#DBDCA6;font-weight:bold", "");
   }
 
   /** Returns the mime type of the image @param {Uint8Array} buffer The UInt8Array buffer */
@@ -4018,7 +4024,7 @@ BackgroundManager-gridWrapper::-webkit-scrollbar,
       }
       return blob;
     } catch (e) {
-      console.warn('[BackgroundManager] optimizeNewUpload failed', e);
+      console.warn('[DynamicBackgrounds] optimizeNewUpload failed', e);
       return blob;
     }
   }
@@ -4072,7 +4078,7 @@ BackgroundManager-gridWrapper::-webkit-scrollbar,
           else triggeredWhileHidden = true;
         }
         try {
-          const mounted = document.querySelector('.BackgroundManager-gridWrapper');
+          const mounted = document.querySelector('.DynamicBackgrounds-gridWrapper');
           // Use cached images if available to avoid DB hits
           const storedImages = Array.isArray(constants._cachedImages) ? constants._cachedImages : [];
           let availableImages = storedImages.slice();
@@ -4226,10 +4232,10 @@ BackgroundManager-gridWrapper::-webkit-scrollbar,
       }, []);
       return jsx('div', {
         ref: containerRef,
-        className: 'BackgroundManager-bgContainer',
+        className: 'DynamicBackgrounds-bgContainer',
         children: [
-          jsx('div', { ref: bg0Ref, className: 'BackgroundManager-bg' + (activeIndex === 0 ? ' active' : ''), style: activeIndex === 0 && currentSrc ? { backgroundImage: 'linear-gradient(rgba(0,0,0,var(--BgManager-dimming,0)), rgba(0,0,0,var(--BgManager-dimming,0))), url(' + currentSrc + ')' } : null }),
-          jsx('div', { ref: bg1Ref, className: 'BackgroundManager-bg' + (activeIndex === 1 ? ' active' : ''), style: activeIndex === 1 && currentSrc ? { backgroundImage: 'linear-gradient(rgba(0,0,0,var(--BgManager-dimming,0)), rgba(0,0,0,var(--BgManager-dimming,0))), url(' + currentSrc + ')' } : null })
+          jsx('div', { ref: bg0Ref, className: 'DynamicBackgrounds-bg' + (activeIndex === 0 ? ' active' : ''), style: activeIndex === 0 && currentSrc ? { backgroundImage: 'linear-gradient(rgba(0,0,0,var(--BgManager-dimming,0)), rgba(0,0,0,var(--BgManager-dimming,0))), url(' + currentSrc + ')' } : null }),
+          jsx('div', { ref: bg1Ref, className: 'DynamicBackgrounds-bg' + (activeIndex === 1 ? ' active' : ''), style: activeIndex === 1 && currentSrc ? { backgroundImage: 'linear-gradient(rgba(0,0,0,var(--BgManager-dimming,0)), rgba(0,0,0,var(--BgManager-dimming,0))), url(' + currentSrc + ')' } : null })
         ]
       })
     }
@@ -4240,7 +4246,7 @@ BackgroundManager-gridWrapper::-webkit-scrollbar,
         ['"disable-adaptive-theme":'].every(str => source.includes(str))
       )(mod[key].toString()))[0];
       if (!ThemeProviderKey) {
-        console.error('%c[BackgroundManager] %cCannot patch ThemeProvider: the internal string "disable-adaptive-theme:" was not found in Discord\'s bundle anymore. Discord likely changed this internal component; the Webpack.getBySource() filter in viewTransition.create() needs to be updated to match the current build.', "color:#DBDCA6;font-weight:bold", "");
+        console.error('%c[DynamicBackgrounds] %cCannot patch ThemeProvider: the internal string "disable-adaptive-theme:" was not found in Discord\'s bundle anymore. Discord likely changed this internal component; the Webpack.getBySource() filter in viewTransition.create() needs to be updated to match the current build.', "color:#DBDCA6;font-weight:bold", "");
         throw new Error("Cannot patch ThemeProvider");
       }
       cleanupPatch = Patcher.after(meta.slug, mod, ThemeProviderKey, (_, __, returnVal) => {
@@ -4308,26 +4314,26 @@ BackgroundManager-gridWrapper::-webkit-scrollbar,
       if (originalBackground) {
         originalBackground = false;
         timer = setTimeout(() => {
-          DOM.removeStyle('BackgroundManager-background');
-          DOM.addStyle('BackgroundManager-background', property.map(e => `${e.selector} {${e.property}: url('${src}') !important;}`).join('\n'));
+          DOM.removeStyle('DynamicBackgrounds-background');
+          DOM.addStyle('DynamicBackgrounds-background', property.map(e => `${e.selector} {${e.property}: url('${src}') !important;}`).join('\n'));
           timer = null;
         }, constants.settings.transition.duration)
       } else {
-        DOM.removeStyle('BackgroundManager-background');
-        DOM.addStyle('BackgroundManager-background', property.map(e => `${e.selector} {${e.property}: url('${src}') !important;}`).join('\n'));
+        DOM.removeStyle('DynamicBackgrounds-background');
+        DOM.addStyle('DynamicBackgrounds-background', property.map(e => `${e.selector} {${e.property}: url('${src}') !important;}`).join('\n'));
       }
     }
     function removeImage() {
       domBG.forEach(e => e.classList.remove('active'));
       originalBackground = true
-      DOM.removeStyle('BackgroundManager-background');
+      DOM.removeStyle('DynamicBackgrounds-background');
     }
     function destroy() {
       cleanupPatch?.();
       constants.baseLayer?.bg && forceRerenderElement('.' + constants.baseLayer.bg);
       timer && (clearTimeout(timer), timer = null);
       originalBackground = true;
-      DOM.removeStyle('BackgroundManager-background');
+      DOM.removeStyle('DynamicBackgrounds-background');
       bgContainer = null;
       currentSrc = null;
       previewBackup = null;   // sonst haengt eine laufende Vorschau nach
@@ -4384,8 +4390,8 @@ BackgroundManager-gridWrapper::-webkit-scrollbar,
       overwrite && setImageFromIDB(storedImages => {
         storedImages.forEach(image => {
           if (image.selected && image.src) {
-            DOM.removeStyle('BackgroundManager-background');
-            DOM.addStyle('BackgroundManager-background', property.map(e => `${e.selector} {${e.property}: url('${image.src}') !important;}`).join('\n'));
+            DOM.removeStyle('DynamicBackgrounds-background');
+            DOM.addStyle('DynamicBackgrounds-background', property.map(e => `${e.selector} {${e.property}: url('${image.src}') !important;}`).join('\n'));
           }
         })
       });
@@ -4402,7 +4408,7 @@ BackgroundManager-gridWrapper::-webkit-scrollbar,
       // observe(null) wuerde werfen und das Plugin ueber das catch deaktivieren.
       const target = document.querySelector('bd-head bd-themes');
       if (!target) {
-        console.warn('%c[BackgroundManager] %cNo <bd-themes> found - overwriteCSS is being skipped. The plugin keeps running normally and uses its own background layer.', "color:#DBDCA6;font-weight:bold", "");
+        console.warn('%c[DynamicBackgrounds] %cNo <bd-themes> found - overwriteCSS is being skipped. The plugin keeps running normally and uses its own background layer.', "color:#DBDCA6;font-weight:bold", "");
         return;
       }
 
@@ -4414,7 +4420,7 @@ BackgroundManager-gridWrapper::-webkit-scrollbar,
       nodeObserver.observe(target, { childList: true, subtree: true });
     }
     function stop() {
-      DOM.removeStyle('BackgroundManager-background');
+      DOM.removeStyle('DynamicBackgrounds-background');
       clearTimeout(debounceTimer);
       debounceTimer = null;
       nodeObserver?.disconnect();
@@ -4481,7 +4487,7 @@ BackgroundManager-gridWrapper::-webkit-scrollbar,
     } catch (e) {
       // Kein Netz, GitHub gerade weg, Tippfehler in der URL - kein Grund, den
       // Nutzer zu behelligen. Nur ins Log.
-      console.warn('%c[BackgroundManager] %cUpdate check failed:', "color:#DBDCA6;font-weight:bold", "", e.message);
+      console.warn('%c[DynamicBackgrounds] %cUpdate check failed:', "color:#DBDCA6;font-weight:bold", "", e.message);
       return 0;
     }
 
@@ -4515,7 +4521,7 @@ BackgroundManager-gridWrapper::-webkit-scrollbar,
             schliessen?.();
             UI.showToast(meta.name + ' updated to ' + fern + '.', { type: 'success' });
           } catch (e) {
-            console.error('[BackgroundManager] Update failed:', e);
+            console.error('[DynamicBackgrounds] Update failed:', e);
             UI.showToast('Update failed - see console.', { type: 'error' });
           }
         }
@@ -4531,7 +4537,7 @@ BackgroundManager-gridWrapper::-webkit-scrollbar,
       updateTimer = setTimeout(() => { pruefeAufUpdates(); }, UPDATE_VERZOEGERUNG);
 
       try {
-        !Object.keys(constants).length && console.log('%c[BackgroundManager] %cInitialized', "color:#DBDCA6;font-weight:bold", "")
+        !Object.keys(constants).length && console.log('%c[DynamicBackgrounds] %cInitialized', "color:#DBDCA6;font-weight:bold", "")
         const configs = Data.load(meta.slug, "settings");
         // Gespeicherte Uebergaenge umbiegen, siehe legacyTransitionMap
         if (configs?.transition) configs.transition = migrateTransition(configs.transition);
@@ -4554,11 +4560,11 @@ BackgroundManager-gridWrapper::-webkit-scrollbar,
           try {
             const result = fn();
             if (result === undefined || result === null) {
-              console.warn(`%c[BackgroundManager] %cModule lookup "${label}" returned nothing. Discord's internals may have changed (filter no longer matches).`, "color:#DBDCA6;font-weight:bold", "");
+              console.warn(`%c[DynamicBackgrounds] %cModule lookup "${label}" returned nothing. Discord's internals may have changed (filter no longer matches).`, "color:#DBDCA6;font-weight:bold", "");
             }
             return result;
           } catch (e) {
-            console.warn(`%c[BackgroundManager] %cModule lookup "${label}" threw an error:`, "color:#DBDCA6;font-weight:bold", "", e);
+            console.warn(`%c[DynamicBackgrounds] %cModule lookup "${label}" threw an error:`, "color:#DBDCA6;font-weight:bold", "", e);
             return undefined;
           }
         }
@@ -4609,7 +4615,7 @@ BackgroundManager-gridWrapper::-webkit-scrollbar,
             !modules.baseLayer ? 'baseLayer' : null,
             ...missingNativeUI.map(k => `nativeUI.${k}`)
           ].filter(Boolean).join(', ');
-          console.error(`%c[BackgroundManager] %cCannot start: missing module(s) -> ${missingList}. Discord likely changed the internal code these filters look for; the filters in the plugin need to be updated.`, "color:#DBDCA6;font-weight:bold", "");
+          console.error(`%c[DynamicBackgrounds] %cCannot start: missing module(s) -> ${missingList}. Discord likely changed the internal code these filters look for; the filters in the plugin need to be updated.`, "color:#DBDCA6;font-weight:bold", "");
           throw new Error("Missing essential modules: " + missingList);
         }
         Object.assign(constants, modules);
@@ -4632,7 +4638,7 @@ BackgroundManager-gridWrapper::-webkit-scrollbar,
             const toMigrate = storedItems.filter(e => e.category === LEGACY_FALLBACK_CATEGORY);
             if (toMigrate.length) {
               toMigrate.forEach(e => { e.category = FALLBACK_CATEGORY; });
-              console.log('%c[BackgroundManager] %c' + toMigrate.length + ' image(s) moved from "' + LEGACY_FALLBACK_CATEGORY + '" to "' + FALLBACK_CATEGORY + '".', "color:#DBDCA6;font-weight:bold", "");
+              console.log('%c[DynamicBackgrounds] %c' + toMigrate.length + ' image(s) moved from "' + LEGACY_FALLBACK_CATEGORY + '" to "' + FALLBACK_CATEGORY + '".', "color:#DBDCA6;font-weight:bold", "");
               try { saveItems(db, 'images', storedItems, storedItems); } catch (e) { console.error(e); }
             }
 
@@ -4654,7 +4660,7 @@ BackgroundManager-gridWrapper::-webkit-scrollbar,
         addButton();
       } catch (e) {
         console.error(e);
-        UI.showToast("Could not start BackgroundManager", { type: 'error' });
+        UI.showToast("Could not start DynamicBackgrounds", { type: 'error' });
         BdApi.Plugins.disable(meta.id);
       }
     },
@@ -4684,7 +4690,7 @@ function CategoryQuickButton({ categories, value, onChange }) {
       ref: btnRef,
       /* Chip wie die anderen; die Beschriftung zeigt die Zahl der gefilterten
          Kategorien direkt an. */
-      className: 'BackgroundManager-chip' + (selected.length ? ' active amber' : ''),
+      className: 'DynamicBackgrounds-chip' + (selected.length ? ' active amber' : ''),
       title: selected.length ? `Slideshow categories: ${selected.join(', ')}` : 'Select slideshow categories',
       onClick: () => setOpen(o => !o),
       children: [jsx('svg', { key: 'i', width: 15, height: 15, viewBox: '0 0 24 24', fill: 'none', stroke: 'currentColor', strokeWidth: 2, strokeLinecap: 'round', strokeLinejoin: 'round',

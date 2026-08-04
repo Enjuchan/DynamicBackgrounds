@@ -13,6 +13,40 @@ major release.
 
 ---
 
+## 3.7.2
+
+### Changed
+
+- **The plugin now goes by one name everywhere.** Console messages, the toolbar
+  tooltip, the window heading, the context menu entry and all CSS class names
+  say `DynamicBackgrounds`. Until now the code carried a mix: some messages were
+  tagged `[BackgroundManager]`, others `[DynamicBackgrounds]`, and every CSS
+  class used the `BackgroundManager-` prefix.
+
+  That prefix was inherited from the plugin this one started out from, see
+  Credits below. Nothing about your stored images or settings is affected: the
+  database has always been called `DynamicBackgrounds` and the settings key
+  comes from the file name.
+
+  Lovelace 3.0.2 accepts both the old and the new class name, so an older copy
+  of either one keeps working while both updates make their way around.
+
+### Added
+
+- **Credits for the original.** This plugin started from
+  [BackgroundManager](https://github.com/Naru-kami/BackgroundManager-plugin) by
+  Naru-kami and still contains code from it. The MIT licence requires the
+  original copyright notice to be kept, and it had been missing. `LICENSE` now
+  names both holders, and the README has a Credits section.
+
+### Fixed
+
+- Six leftover debug messages in the image download path wrote to the console on
+  every download. They logged the blob size, the source URL and the file name,
+  which was useful while that code was being written and pure noise since.
+
+---
+
 ## 3.7.1
 
 ### Fixed

@@ -178,6 +178,16 @@ See [CHANGELOG.md](CHANGELOG.md) for the version history.
 
 ---
 
+## Credits
+
+This plugin started from
+[BackgroundManager](https://github.com/Naru-kami/BackgroundManager-plugin) by
+**Naru-kami**, MIT licensed, and still contains code from it. The
+`BackgroundManager-` prefix on the CSS class names comes from there.
+
+---
+
 ## License
 
-MIT
+MIT, see [LICENSE](LICENSE). Copyright is held jointly: Naru-kami for the
+original code, Enju for everything added since.
