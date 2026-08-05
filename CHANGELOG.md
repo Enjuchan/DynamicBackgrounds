@@ -13,6 +13,33 @@ major release.
 
 ---
 
+## 3.9.0
+
+### Added
+
+- **Two accent colours are published from the current background image**, as the
+  CSS variables `--db-accent-1` and `--db-accent-2`. They are rewritten on every
+  image change, including the hover preview. Any theme can read them; the plugin
+  itself does not use them.
+
+  [LovelaceSettings](https://github.com/Enjuchan/LovelaceSettings) 1.5.0 has a
+  switch that points the Lovelace glow at them, so the glow follows the
+  slideshow.
+
+  The two colours are picked from a hue histogram of the image at 64 pixels
+  wide, weighted by saturation so a large dull area cannot crowd out a small
+  vivid one, and the second colour has to sit at least 60 degrees away from the
+  first so you do not get the same tone twice.
+
+  Saturation and lightness are lifted into a range where a glow actually glows.
+  On dark wallpapers the hue comes from the image while the brightness does not,
+  which is deliberate: the raw values are usually too dim to read as light.
+
+  Resizing to 64 pixels first means an image change decodes about 4,000 pixels
+  for this instead of four million.
+
+---
+
 ## 3.8.0
 
 ### Added

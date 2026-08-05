@@ -95,6 +95,36 @@ cards appearing rather than being flipped through.
 
 ---
 
+## Accent colours for themes
+
+While a background is set, the plugin publishes two colours taken from that
+image:
+
+| Variable | What it is |
+| --- | --- |
+| `--db-accent-1` | The dominant colour of the current image |
+| `--db-accent-2` | A second one, at least 60 degrees away in hue |
+
+They are rewritten on every image change, including the hover preview, so
+anything built on them follows the slideshow by itself. Use them in Custom CSS
+or in a theme:
+
+```css
+:root { --my-glow: var(--db-accent-1, #5a8cff); }
+```
+
+Always give `var()` a fallback. With the plugin disabled the variables are
+simply not there.
+
+[LovelaceSettings](https://github.com/Enjuchan/LovelaceSettings) has a switch
+that points the Lovelace glow at them.
+
+Hue comes from the image, brightness does not: saturation and lightness are
+lifted into a range where a colour still reads as light on a dark surface. Most
+wallpapers are too dim otherwise.
+
+---
+
 ## Installation
 
 1. Install [BetterDiscord](https://betterdiscord.app)

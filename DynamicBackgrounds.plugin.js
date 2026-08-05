@@ -2,7 +2,7 @@
  * @name DynamicBackgrounds
  * @author Enju
  * @description Extends Discord themes with background images, slideshow, transitions and ambient effects.
- * @version 3.8.0
+ * @version 3.9.0
  * @source https://github.com/Enjuchan/DynamicBackgrounds/blob/main/DynamicBackgrounds.plugin.js
  * @updateUrl https://raw.githubusercontent.com/Enjuchan/DynamicBackgrounds/main/DynamicBackgrounds.plugin.js
  * @website https://github.com/Enjuchan/DynamicBackgrounds
@@ -2696,6 +2696,7 @@ module.exports = meta => {
     DOM.removeStyle(meta.slug + '-style');
     DOM.removeStyle(meta.slug + '-glitch');
     DOM.removeStyle('DynamicBackgrounds-background');
+    DOM.removeStyle('DynamicBackgrounds-accent');
     /* Zwischengespeicherte Zustaende freigeben. _cachedImages haelt sonst alle
        Bilddaten im Speicher, obwohl das Plugin aus ist. */
     constants._cachedImages = null;
@@ -4121,6 +4122,133 @@ DynamicBackgrounds-gridWrapper::-webkit-scrollbar,
     }
   }
 
+  /* AKZENTFARBEN ----------------------------------------------------------
+
+     Aus dem laufenden Hintergrundbild werden zwei Farben gerechnet und als
+     --db-accent-1 und --db-accent-2 veroeffentlicht. Themes koennen sie lesen,
+     das Plugin selbst benutzt sie nicht. Die Idee stammt aus dem Ursprungs-
+     plugin, das eine Akzentfarbe per k-means ermittelt.
+
+     Hier steht bewusst KEIN k-means. Ein Histogramm ueber den Farbton reicht
+     fuer zwei Farben voellig aus, laeuft in einem Durchgang und hat keine
+     Startwerte, die zufaellig schlecht liegen koennen. k-means waere mehr Code
+     fuer ein Ergebnis, das man nicht unterscheiden kann.
+
+     Gerechnet wird auf 64 Pixel Breite. Das genuegt fuer Farbanteile, kostet
+     aber nichts: Ein Bildwechsel dekodiert dafuer rund 4000 Pixel statt vier
+     Millionen. */
+  let accentToken = 0;
+
+  function rgbToHsl(r, g, b) {
+    r /= 255; g /= 255; b /= 255;
+    const max = Math.max(r, g, b), min = Math.min(r, g, b);
+    const l = (max + min) / 2;
+    if (max === min) return [0, 0, l];
+    const d = max - min;
+    const s = l > 0.5 ? d / (2 - max - min) : d / (max + min);
+    let h;
+    if (max === r) h = ((g - b) / d + (g < b ? 6 : 0));
+    else if (max === g) h = (b - r) / d + 2;
+    else h = (r - g) / d + 4;
+    return [h * 60, s, l];
+  }
+
+  function hslToHex(h, s, l) {
+    h = ((h % 360) + 360) % 360;
+    const c = (1 - Math.abs(2 * l - 1)) * s;
+    const x = c * (1 - Math.abs(((h / 60) % 2) - 1));
+    const m = l - c / 2;
+    const [r, g, b] =
+      h < 60 ? [c, x, 0] : h < 120 ? [x, c, 0] : h < 180 ? [0, c, x] :
+      h < 240 ? [0, x, c] : h < 300 ? [x, 0, c] : [c, 0, x];
+    const zwei = v => Math.round((v + m) * 255).toString(16).padStart(2, '0');
+    return '#' + zwei(r) + zwei(g) + zwei(b);
+  }
+
+  /**
+   * Zwei kraeftige Farben aus einem Bild.
+   * @param {Blob} blob
+   * @returns {Promise<[string, string]|null>}
+   */
+  async function extractAccents(blob) {
+    const bitmap = await createImageBitmap(blob, { resizeWidth: 64, resizeQuality: 'low' });
+    const w = bitmap.width, h = bitmap.height;
+    const canvas = (typeof OffscreenCanvas !== 'undefined')
+      ? new OffscreenCanvas(w, h)
+      : document.createElement('canvas');
+    canvas.width = w; canvas.height = h;
+    const ctx = canvas.getContext('2d', { willReadFrequently: true });
+    ctx.drawImage(bitmap, 0, 0);
+    bitmap.close?.();
+    const { data } = ctx.getImageData(0, 0, w, h);
+
+    /* 24 Faecher zu je 15 Grad. Feiner aufzuteilen bringt nichts, weil
+       benachbarte Farbtoene ohnehin als dieselbe Farbe wahrgenommen werden. */
+    const FAECHER = 24;
+    const punkte = new Float64Array(FAECHER);
+    const summeS = new Float64Array(FAECHER);
+    const summeL = new Float64Array(FAECHER);
+    const anzahl = new Float64Array(FAECHER);
+
+    for (let i = 0; i < data.length; i += 4) {
+      if (data[i + 3] < 128) continue;
+      const [hue, s, l] = rgbToHsl(data[i], data[i + 1], data[i + 2]);
+      // Fast-Schwarz, Fast-Weiss und Graustufen tragen keine Farbe bei.
+      if (l < 0.12 || l > 0.92 || s < 0.12) continue;
+      const f = Math.min(FAECHER - 1, Math.floor(hue / (360 / FAECHER)));
+      /* Nach Saettigung gewichtet, nicht nur gezaehlt: Eine grosse stumpfe
+         Flaeche soll eine kleine leuchtende nicht verdraengen. */
+      punkte[f] += 0.5 + s;
+      summeS[f] += s; summeL[f] += l; anzahl[f]++;
+    }
+
+    let erste = -1;
+    for (let f = 0; f < FAECHER; f++) if (erste < 0 || punkte[f] > punkte[erste]) erste = f;
+    if (erste < 0 || punkte[erste] === 0) return null;
+
+    /* Die zweite Farbe braucht Abstand, sonst bekommt man zweimal dasselbe und
+       der Verlauf sieht einfarbig aus. Findet sich nichts, wird gedreht. */
+    let zweite = -1;
+    for (let f = 0; f < FAECHER; f++) {
+      if (punkte[f] === 0) continue;
+      const abstand = Math.abs(f - erste);
+      if (Math.min(abstand, FAECHER - abstand) < 4) continue;
+      if (zweite < 0 || punkte[f] > punkte[zweite]) zweite = f;
+    }
+
+    const ausFach = f => {
+      const hue = (f + 0.5) * (360 / FAECHER);
+      /* Angehoben auf einen Bereich, in dem ein Glow ueberhaupt leuchtet. Die
+         Rohwerte sind oft zu dunkel oder zu blass, um als Licht zu wirken. */
+      const s = Math.min(0.95, Math.max(0.55, summeS[f] / anzahl[f]));
+      const l = Math.min(0.75, Math.max(0.55, summeL[f] / anzahl[f]));
+      return [hue, s, l];
+    };
+
+    const [h1, s1, l1] = ausFach(erste);
+    const [h2, s2, l2] = zweite >= 0 ? ausFach(zweite) : [h1 + 150, s1, l1];
+    return [hslToHex(h1, s1, l1), hslToHex(h2, s2, l2)];
+  }
+
+  /** Rechnet die Farben zum Bild und schreibt sie als CSS-Variablen. */
+  function publishAccents(src) {
+    if (!src) return;
+    const token = ++accentToken;
+    (async () => {
+      try {
+        const blob = await (await fetch(src)).blob();
+        const farben = await extractAccents(blob);
+        // Zwischendurch wurde schon wieder gewechselt - dieses Ergebnis ist alt.
+        if (!farben || token !== accentToken) return;
+        DOM.removeStyle('DynamicBackgrounds-accent');
+        DOM.addStyle('DynamicBackgrounds-accent',
+          `:root { --db-accent-1: ${farben[0]}; --db-accent-2: ${farben[1]}; }`);
+      } catch (e) {
+        // Nicht lesbares Bild: dann bleiben die alten Farben stehen.
+      }
+    })();
+  }
+
   async function optimizeNewUpload(blob, filename) {
     try {
       if (!blob || !blob.type || !blob.type.startsWith('image/')) return blob;
@@ -4428,6 +4556,10 @@ DynamicBackgrounds-gridWrapper::-webkit-scrollbar,
     function setImage(src) {
 
       currentSrc = src;
+      /* Einziger Punkt, durch den jeder Bildwechsel laeuft: Diashow,
+         Handauswahl, Live-Vorschau und Start. Deshalb steht es hier und nicht
+         an vier Aufrufstellen. */
+      publishAccents(src);
       if (domBG.length === 2) {
         document.visibilityState === 'visible' && (activeIndex ^= 1);
         domBG[activeIndex].style.backgroundImage = 'linear-gradient(rgba(0,0,0,var(--BgManager-dimming,0)), rgba(0,0,0,var(--BgManager-dimming,0))), url(' + src + ')';
