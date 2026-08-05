@@ -13,6 +13,35 @@ major release.
 
 ---
 
+## 3.9.1
+
+### Fixed
+
+- **The manager closes again when you click outside it.** It had to be closed
+  through its own toolbar icon, stayed on top of everything, and did not go away
+  when another plugin's panel was opened.
+
+  Two separate causes, both of which had to go.
+
+  Discord removed `trapClicks` from the module the plugin looked the layer
+  container class up in. The lookup returned nothing, the selector became
+  `.undefined`, and the effect bailed out before registering any click handlers.
+  The lookup now falls back to `layerContainer`, and it no longer bails out at
+  all: it falls back to the attribute selector, and failing that to the window
+  itself. A missing Discord class may make a feature less precise, never switch
+  it off.
+
+  The second one only became visible after that: the guard that keeps the window
+  open while you use a context menu inside it listed `[class*="layer"]`, and
+  Discord puts the whole app under `layer__ baseLayer__`. It matched every click
+  anywhere, so the condition was always true. The question is now asked the
+  other way round: anything inside the base layer is ordinary app content and
+  closes the window, anything above it does not. If the base layer cannot be
+  found either, it deliberately falls back to closing, which is the harmless
+  direction.
+
+---
+
 ## 3.9.0
 
 ### Added

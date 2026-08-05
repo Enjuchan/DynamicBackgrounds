@@ -2,7 +2,7 @@
  * @name DynamicBackgrounds
  * @author Enju
  * @description Extends Discord themes with background images, slideshow, transitions and ambient effects.
- * @version 3.9.0
+ * @version 3.9.1
  * @source https://github.com/Enjuchan/DynamicBackgrounds/blob/main/DynamicBackgrounds.plugin.js
  * @updateUrl https://raw.githubusercontent.com/Enjuchan/DynamicBackgrounds/main/DynamicBackgrounds.plugin.js
  * @website https://github.com/Enjuchan/DynamicBackgrounds
@@ -462,7 +462,28 @@ module.exports = meta => {
     const mainComponent = useRef(null);
     useEffect(() => {
       let mouseDownOnPopout = false;
-      const layerContainer = reverseQuerySelector(mainComponent.current, '.' + constants.layerContainerClass?.layerContainer);
+
+      /* Drei Stufen, absichtlich in dieser Reihenfolge:
+
+         1. der Klassenname aus dem Webpack-Modul, wenn er auffindbar ist
+         2. sonst ueber das Attribut - der Name "layerContainer" ueberlebt einen
+            Hash-Wechsel, die Klasse selbst gibt es weiterhin
+         3. sonst das Fenster selbst als Bezug
+
+         Frueher stand hier ein hartes Aussteigen, wenn Schritt 1 fehlschlug.
+         Genau das ist passiert: Discord entfernte "trapClicks", der Selektor
+         wurde ".undefined", und mit dem Ausstieg wurden die Handler nie
+         installiert. Das Fenster liess sich dann nur noch ueber sein Symbol
+         schliessen, blieb ueber allem liegen und ging auch beim Oeffnen eines
+         anderen Plugins nicht weg.
+
+         Ein fehlender Klassenname darf eine Funktion verlangsamen oder
+         ungenauer machen, aber nicht abschalten. Fuer das Schliessen bei Klick
+         nach aussen genuegt das Fenster als Bezug voellig. */
+      const layerContainer =
+        reverseQuerySelector(mainComponent.current, '.' + constants.layerContainerClass?.layerContainer) ||
+        reverseQuerySelector(mainComponent.current, '[class*="layerContainer"]') ||
+        mainComponent.current;
       if (!layerContainer) return;
 
       const ctrl = new AbortController();
@@ -473,9 +494,28 @@ module.exports = meta => {
       addEventListener('mouseup', e => {
         // If a context menu was just opened by our code, suppress closing the popout briefly
         if (constants._suppressClose) { constants._suppressClose = false; return; }
-        // Prüfen ob Klick in einem Kontextmenü oder Layer war
-        const isInContextMenu = e.target.closest('[class*="menu"], [class*="layer"], [class*="popout"], [role="menu"], [role="listbox"]');
-        if (mouseDownOnPopout || layerContainer.contains(e.target) || e.target.closest('#' + meta.slug) || isInContextMenu) return;
+
+        /* Liegt der Klick in einer Ebene UEBER der App, soll nichts zugehen -
+           sonst wuerde sich das Fenster beim Bedienen des eigenen Kontextmenues
+           selbst schliessen.
+
+           Hier stand vorher [class*="layer"] in der Aufzaehlung, und das war zu
+           grob: Discord haengt die gesamte App unter "layer__ baseLayer__".
+           Damit traf closest() bei JEDEM Klick, die Bedingung war immer wahr,
+           und das Fenster ging nie zu. Es liess sich nur noch ueber sein Symbol
+           schliessen und blieb ueber allem liegen.
+
+           Deshalb umgekehrt gefragt: Alles INNERHALB der Grundebene ist normaler
+           App-Inhalt und schliesst. Was darueber liegt, schliesst nicht.
+
+           Findet sich die Grundebene nicht mehr, wird bewusst auf "schliessen"
+           zurueckgefallen. Dann geht das Fenster einmal zu viel zu, statt gar
+           nicht mehr - das ist die harmlosere Richtung. */
+        const baseLayer = document.querySelector('[class*="baseLayer"]');
+        const ueberDerApp = (baseLayer ? !baseLayer.contains(e.target) : false)
+          || !!e.target.closest('[role="menu"], [role="listbox"], [role="dialog"]');
+
+        if (mouseDownOnPopout || layerContainer.contains(e.target) || e.target.closest('#' + meta.slug) || ueberDerApp) return;
         onRequestClose();
       }, ctrl);
       addEventListener('keydown', e => {
@@ -4832,7 +4872,12 @@ DynamicBackgrounds-gridWrapper::-webkit-scrollbar,
           textStyles: safeLookup('textStyles', () => Webpack.getByKeys("defaultColor")), // classes for general text styles
           markupStyles: safeLookup('markupStyles', () => Webpack.getByKeys("markup")),
           slider: safeLookup('slider', () => Webpack.getByKeys("sliderContainer", "slider")),
-          layerContainerClass: safeLookup('layerContainerClass', () => Webpack.getByKeys("trapClicks")), // classes of Discord"s nativelayer container
+          /* Discord hat "trapClicks" aus diesem Modul entfernt. Die Suche lief
+             danach ins Leere, und weil ManagerComponent ohne den Klassennamen
+             ausstieg, liess sich das Fenster nur noch ueber sein Symbol
+             schliessen. Erst der alte Schluessel, dann der neue - so greift es
+             auf beiden Staenden. */
+          layerContainerClass: safeLookup('layerContainerClass', () => Webpack.getByKeys("trapClicks") || Webpack.getByKeys("layerContainer")), // classes of Discord's native layer container
           originalLink: safeLookup('originalLink', () => Webpack.getByKeys("originalLink")), // classes for image embed
           scrollbar: safeLookup('scrollbar', () => Webpack.getByKeys("thin")), // classes for scrollable content
           separator: safeLookup('separator', () => Webpack.getByKeys("scroller", "label")), // classes for separator
