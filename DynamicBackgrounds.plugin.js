@@ -2,7 +2,7 @@
  * @name DynamicBackgrounds
  * @author Enju
  * @description Extends Discord themes with background images, slideshow, transitions and ambient effects.
- * @version 3.9.1
+ * @version 3.9.2
  * @source https://github.com/Enjuchan/DynamicBackgrounds/blob/main/DynamicBackgrounds.plugin.js
  * @updateUrl https://raw.githubusercontent.com/Enjuchan/DynamicBackgrounds/main/DynamicBackgrounds.plugin.js
  * @website https://github.com/Enjuchan/DynamicBackgrounds
@@ -2737,6 +2737,10 @@ module.exports = meta => {
     DOM.removeStyle(meta.slug + '-glitch');
     DOM.removeStyle('DynamicBackgrounds-background');
     DOM.removeStyle('DynamicBackgrounds-accent');
+    /* Die Schluessel sind Objekt-URLs, die beim Abschalten widerrufen werden.
+       Nach einem Neustart zeigen sie ins Leere, also hier leeren. */
+    accentCache.clear();
+    letzteAccentQuelle = null;
     /* Zwischengespeicherte Zustaende freigeben. _cachedImages haelt sonst alle
        Bilddaten im Speicher, obwohl das Plugin aus ist. */
     constants._cachedImages = null;
@@ -4270,19 +4274,48 @@ DynamicBackgrounds-gridWrapper::-webkit-scrollbar,
     return [hslToHex(h1, s1, l1), hslToHex(h2, s2, l2)];
   }
 
+  /* Gerechnete Farben je Bild-URL. Die Objekt-URL eines Bildes bleibt waehrend
+     einer Sitzung dieselbe, ein Bild wird also hoechstens einmal ausgewertet.
+
+     Gebraucht wird das vor allem wegen der Live-Vorschau: Beim Wandern ueber
+     das Raster wechselt das Bild staendig hin und her, und beim Verlassen wird
+     das vorherige zurueckgeholt. Ohne Zwischenspeicher waere das jedes Mal ein
+     vollstaendiges Dekodieren fuer ein Ergebnis, das schon dastand.
+
+     Die Obergrenze verhindert, dass die Tabelle mit widerrufenen Objekt-URLs
+     vollaeuft - die Schluessel bleiben sonst liegen, auch wenn das Bild laengst
+     freigegeben ist. */
+  const accentCache = new Map();
+  const ACCENT_CACHE_MAX = 200;
+  let letzteAccentQuelle = null;
+
+  function writeAccents(farben) {
+    DOM.removeStyle('DynamicBackgrounds-accent');
+    DOM.addStyle('DynamicBackgrounds-accent',
+      `:root { --db-accent-1: ${farben[0]}; --db-accent-2: ${farben[1]}; }`);
+  }
+
   /** Rechnet die Farben zum Bild und schreibt sie als CSS-Variablen. */
   function publishAccents(src) {
-    if (!src) return;
+    if (!src || src === letzteAccentQuelle) return;
+    letzteAccentQuelle = src;
+
+    const bekannt = accentCache.get(src);
+    if (bekannt) { accentToken++; writeAccents(bekannt); return; }
+
     const token = ++accentToken;
     (async () => {
       try {
         const blob = await (await fetch(src)).blob();
         const farben = await extractAccents(blob);
+        if (!farben) return;
+
+        if (accentCache.size >= ACCENT_CACHE_MAX) accentCache.delete(accentCache.keys().next().value);
+        accentCache.set(src, farben);
+
         // Zwischendurch wurde schon wieder gewechselt - dieses Ergebnis ist alt.
-        if (!farben || token !== accentToken) return;
-        DOM.removeStyle('DynamicBackgrounds-accent');
-        DOM.addStyle('DynamicBackgrounds-accent',
-          `:root { --db-accent-1: ${farben[0]}; --db-accent-2: ${farben[1]}; }`);
+        if (token !== accentToken) return;
+        writeAccents(farben);
       } catch (e) {
         // Nicht lesbares Bild: dann bleiben die alten Farben stehen.
       }

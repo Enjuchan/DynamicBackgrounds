@@ -13,6 +13,23 @@ major release.
 
 ---
 
+## 3.9.2
+
+### Changed
+
+- Accent colours are worked out at most once per image instead of on every
+  switch. Two stages: the same image source in a row does nothing at all, and a
+  small table remembers what was already calculated.
+
+  This matters for the hover preview above all. Moving across the grid switches
+  the background constantly and puts the previous one back on leaving, and each
+  of those was a full decode for a result that was already there.
+
+  The table is capped at 200 entries and cleared on shutdown, because its keys
+  are object URLs that stop pointing anywhere once they are revoked.
+
+---
+
 ## 3.9.1
 
 ### Fixed
