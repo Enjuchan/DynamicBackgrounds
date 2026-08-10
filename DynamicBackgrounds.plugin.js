@@ -2,7 +2,7 @@
  * @name DynamicBackgrounds
  * @author Enju
  * @description Extends Discord themes with background images, slideshow, transitions and ambient effects.
- * @version 3.9.2
+ * @version 3.10.0
  * @source https://github.com/Enjuchan/DynamicBackgrounds/blob/main/DynamicBackgrounds.plugin.js
  * @updateUrl https://raw.githubusercontent.com/Enjuchan/DynamicBackgrounds/main/DynamicBackgrounds.plugin.js
  * @website https://github.com/Enjuchan/DynamicBackgrounds
@@ -120,7 +120,11 @@ module.exports = meta => {
     adjustment: {
       xPosition: 0,
       yPosition: 0,
-      dimming: 0,
+      /* Nicht 0: Seit die Flaechen immer durchsichtig sind, liegt der Text
+         direkt auf dem Bild. Ohne Abdunklung ist er auf hellen Motiven kaum zu
+         lesen, und der erste Eindruck nach dem Einschalten waere "unbrauchbar".
+         0.3 ist dunkel genug zum Lesen und hell genug, dass das Motiv wirkt. */
+      dimming: 0.3,
       blur: 0,
       grayscale: 0,
       saturate: 100,
@@ -2737,6 +2741,7 @@ module.exports = meta => {
     DOM.removeStyle(meta.slug + '-glitch');
     DOM.removeStyle('DynamicBackgrounds-background');
     DOM.removeStyle('DynamicBackgrounds-accent');
+    DOM.removeStyle('DynamicBackgrounds-surfaces');
     /* Die Schluessel sind Objekt-URLs, die beim Abschalten widerrufen werden.
        Nach einem Neustart zeigen sie ins Leere, also hier leeren. */
     accentCache.clear();
@@ -4322,6 +4327,57 @@ DynamicBackgrounds-gridWrapper::-webkit-scrollbar,
     })();
   }
 
+  /* DURCHSICHTIGE FLAECHEN OHNE THEME -------------------------------------
+
+     Das Plugin malt sein Bild ganz unten in Discords Hintergrundebene. Im
+     Auslieferungszustand malt Discord seine Oberflaeche aber lueckenlos deckend
+     darueber: Serverleiste, Kanalliste, Chat, Mitgliederliste. Es gibt also
+     keine Stelle, durch die das Bild zu sehen waere.
+
+     Bisher konnte nur ein Theme das aufloesen. Damit war das Plugin faktisch
+     kein eigenstaendiges Plugin, obwohl die README etwas anderes versprach.
+
+     Gesetzt werden Discords eigene Hintergrund-Variablen, nicht einzelne
+     Elemente. Das ist der kurze Weg und ueberlebt Klassennamen-Wechsel: Discord
+     benutzt diese Variablen an hunderten Stellen selbst.
+
+     VOLLSTAENDIG transparent, kein abdunkelnder Schleier. Ein erster Anlauf
+     legte hier 45 Prozent Schwarz darueber, damit Text auf hellen Motiven
+     lesbar bleibt - das war doppelt gemoppelt. Fuer genau diesen Zweck gibt es
+     bereits den Regler "Dimming", und der ist die bessere Stelle: Er dunkelt
+     das BILD ab statt die Oberflaeche.
+
+     KEIN Schalter dafuer, das laeuft immer mit. Ein Hintergrundbild-Plugin, bei
+     dem man erst eine Option finden muss, damit ein Hintergrundbild erscheint,
+     ist kaputt und nicht einstellbar.
+
+     KEIN @layer. Ein erster Anlauf stand in einer CSS-Ebene, mit der Idee, dass
+     Themes sich dann von selbst durchsetzen: Geschichtete Regeln verlieren
+     gegen ungeschichtete. Das stimmt auch - nur ist DISCORDS eigenes Stylesheet
+     ebenfalls ungeschichtet. Damit hat Discord seine deckenden Farben
+     zurueckgewonnen und es war wieder kein Bild zu sehen. Die Ebene hat genau
+     das ausgeschaltet, was sie durchsetzen sollte.
+
+     Also normal und ungeschichtet, aber OHNE !important. Das laesst einem Theme
+     die Moeglichkeit, einzelne Werte wieder zu setzen, waehrend Discords
+     Standardwerte ueberschrieben bleiben. */
+  function applySurfaceTransparency() {
+    DOM.removeStyle('DynamicBackgrounds-surfaces');
+    DOM.addStyle('DynamicBackgrounds-surfaces', `
+      :root, .theme-dark, .theme-light {
+        --background-base-lowest:    transparent;
+        --background-base-lower:     transparent;
+        --background-base-low:       transparent;
+        --background-primary:        transparent;
+        --background-secondary:      transparent;
+        --background-secondary-alt:  transparent;
+        --background-tertiary:       transparent;
+        --bg-base-tertiary:          transparent;
+        --custom-channel-members-bg: transparent;
+      }
+    `);
+  }
+
   async function optimizeNewUpload(blob, filename) {
     try {
       if (!blob || !blob.type || !blob.type.startsWith('image/')) return blob;
@@ -4984,6 +5040,7 @@ DynamicBackgrounds-gridWrapper::-webkit-scrollbar,
         viewTransition.create();
         // set up css property using refreshed objectURL
         constants.settings.overwriteCSS && viewTransition.setProperty();
+        applySurfaceTransparency();
         // finally, set the selected image, if any, as background. A bit convoluted, but order is important.
         await setImageFromIDB(storedImages => {
           const img = storedImages.find(image => image.selected);

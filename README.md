@@ -147,12 +147,24 @@ no GitHub, no update prompt - the plugin carries on as normal.
 
 Nothing is downloaded or written without pressing that button.
 
-### Theme compatibility
+### Themes
 
-The plugin brings its own background layer and works with most themes out of
-the box. If your theme paints over it, enable **Override theme CSS variable**
-in the plugin settings - the plugin then detects the theme's background
-variable and overrides it.
+No theme is required. Discord paints its own surfaces opaque, which would cover
+the image completely, so the plugin makes them transparent while it is enabled.
+There is no setting for this: without it the plugin would not do the one thing
+it exists for.
+
+Themes still win. BetterDiscord loads themes after plugin styles, so anything a
+theme sets for those surfaces overrides the plugin. The plugin only overrides
+Discord's own defaults.
+
+If a theme paints its own background over the image, enable **Override theme
+CSS variable** in the plugin settings. The plugin then detects the theme's
+background variable and overrides it. That setting is about a theme's
+background, not about transparency, and it is off by default.
+
+Text sitting directly on a bright image can be hard to read. **Dimming** in the
+settings darkens the image rather than the interface, and starts at `0.3`.
 
 ---
 

@@ -13,6 +13,37 @@ major release.
 
 ---
 
+## 3.10.0
+
+### Added
+
+- **The plugin now works on its own, without a theme.** Until this version it
+  did not: Discord paints its own surfaces completely opaque, so the image was
+  drawn correctly and then covered up. A background image plugin that shows no
+  background image unless you also install a theme.
+
+  Discord's background variables are set to transparent whenever the plugin is
+  enabled. There is no switch for it, on purpose. Having to find an option
+  before a background appears would make the feature look broken rather than
+  configurable.
+
+  Themes are unaffected. BetterDiscord loads `bd-themes` after `bd-styles`, so a
+  theme's own values win over the plugin's at equal weight. The plugin overrides
+  Discord's defaults, a theme overrides the plugin. Nothing to switch either
+  way, and no `!important` anywhere in it.
+
+  If a theme paints its own background over the image, **Override theme CSS
+  variable** is still the answer, unchanged. That setting is about a theme's
+  background variable and has nothing to do with transparency.
+
+### Changed
+
+- Dimming now defaults to `0.3` instead of `0`. With surfaces transparent, text
+  sits directly on the image, and on a bright wallpaper it is barely readable
+  undimmed. Existing installations keep whatever they have set.
+
+---
+
 ## 3.9.2
 
 ### Changed
