@@ -2,7 +2,7 @@
  * @name DynamicBackgrounds
  * @author Enju
  * @description Extends Discord themes with background images, slideshow, transitions and ambient effects.
- * @version 3.10.0
+ * @version 3.10.1
  * @source https://github.com/Enjuchan/DynamicBackgrounds/blob/main/DynamicBackgrounds.plugin.js
  * @updateUrl https://raw.githubusercontent.com/Enjuchan/DynamicBackgrounds/main/DynamicBackgrounds.plugin.js
  * @website https://github.com/Enjuchan/DynamicBackgrounds
@@ -75,6 +75,24 @@ const FALLBACK_CATEGORY = 'Uncategorized';
    Datenbank, ein blosses Umbenennen wuerde also eine zweite, leere Kategorie
    erzeugen und die vorhandenen Bilder verwaist zuruecklassen. */
 const LEGACY_FALLBACK_CATEGORY = 'Standard';
+
+
+/* Reihenfolge der Diashow, wenn Shuffle AUS ist.
+
+   Kategorien alphabetisch, innerhalb einer Kategorie nach id - das ist die
+   Reihenfolge, in der die Bilder auch im Raster stehen. Derselbe Vergleich wie
+   bei allCategories im Manager, damit Anzeige und Ablauf uebereinstimmen.
+
+   Warum eine gemeinsame Funktion: Es gibt ZWEI Wege, die das Bild
+   weiterschalten - den Takt der Diashow in slideShowManager.tick() und den
+   Knopf "Next background" ueber onNextShuffle(). Beide hatten ihre eigene
+   Auswahl, und eine Korrektur an nur einem Weg blieb ohne sichtbare Wirkung. */
+function vergleicheNachKategorie(a, b) {
+  const ka = a.category || FALLBACK_CATEGORY;
+  const kb = b.category || FALLBACK_CATEGORY;
+  const k = ka.localeCompare(kb, undefined, { sensitivity: 'base' });
+  return k !== 0 ? k : (a.id ?? 0) - (b.id ?? 0);
+}
 
 const legacyTransitionMap = {
   /* rotateY auf einer vollflaechigen Ebene laeuft in Electron unrund - der
@@ -813,11 +831,15 @@ module.exports = meta => {
       });
     }, [setImages]);
     const onNextShuffle = useCallback(() => {
-      const currentIndex = images.reduce((p, c, i) => c.selected ? i : p, null);
+      /* Dieselbe Reihenfolge wie im Takt der Diashow, siehe
+         vergleicheNachKategorie. Ohne die Sortierung lief dieser Knopf in
+         Hochladereihenfolge, waehrend der Takt bereits alphabetisch ging. */
+      const reihenfolge = images.slice().sort(vergleicheNachKategorie);
+      const currentIndex = reihenfolge.reduce((p, c, i) => c.selected ? i : p, null);
       let x, it = 0;
-      do x = constants.settings.slideshow.shuffle || currentIndex === null ? Math.floor(Math.random() * images.length) : (currentIndex + 1) % images.length
+      do x = constants.settings.slideshow.shuffle || currentIndex === null ? Math.floor(Math.random() * reihenfolge.length) : (currentIndex + 1) % reihenfolge.length
       while (x === currentIndex && it++ < 25)
-      const item = images[x];
+      const item = reihenfolge[x];
       handleSelect(item.id);
       constants.settings.slideshow.enabled ? slideShowManager.start() : slideShowManager.stop();
       viewTransition.setImage(item.src);
@@ -3408,7 +3430,7 @@ module.exports = meta => {
 .DynamicBackgrounds-Select {
   padding: 8px 12px;
   border-radius: 4px;
-  background-color: var(--background-secondary, #2f3136);
+  background-color: #2b2d31;
   color: var(--text-normal, #dcddde);
   border: none;
   cursor: pointer;
@@ -3422,13 +3444,13 @@ module.exports = meta => {
   background-repeat: no-repeat;
 }
 .DynamicBackgrounds-Select:hover {
-  background-color: var(--background-tertiary, #36393f);
+  background-color: #1e1f22;
 }
 .DynamicBackgrounds-Select:focus {
   outline: 2px solid var(--focus-primary, #00aff4);
 }
 .DynamicBackgrounds-Select option {
-  background-color: var(--background-secondary, #2f3136) !important;
+  background-color: #2b2d31 !important;
   color: var(--text-normal, #dcddde) !important;
 }
 .DynamicBackgrounds-head { display: flex; align-items: center; gap: 8px; }
@@ -4351,6 +4373,16 @@ DynamicBackgrounds-gridWrapper::-webkit-scrollbar,
      dem man erst eine Option finden muss, damit ein Hintergrundbild erscheint,
      ist kaputt und nicht einstellbar.
 
+     ACHTUNG bei eigener Oberflaeche: Das Plugin macht damit auch SEINE EIGENEN
+     Flaechen durchsichtig, wenn sie diese Variablen benutzen. Genau das ist in
+     3.10.0 passiert - der Manager holte seine Farben aus
+     var(--background-secondary) und wurde nach dem Einbau durchscheinend, das
+     Hintergrundbild schien hindurch. Der Rueckfallwert im var() hilft nicht:
+     Die Variable IST definiert, nur eben als transparent.
+
+     Deshalb stehen im Manager feste Farben (#2b2d31, #1e1f22). Wer dort eine
+     neue Flaeche baut, nimmt ebenfalls eine feste Farbe.
+
      KEIN @layer. Ein erster Anlauf stand in einer CSS-Ebene, mit der Idee, dass
      Themes sich dann von selbst durchsetzen: Geschichtete Regeln verlieren
      gegen ungeschichtete. Das stimmt auch - nur ist DISCORDS eigenes Stylesheet
@@ -4475,6 +4507,15 @@ DynamicBackgrounds-gridWrapper::-webkit-scrollbar,
             availableImages = availableImages.filter(img => (img.category || FALLBACK_CATEGORY) === scf);
           }
           if (availableImages.length === 0) return;
+
+          /* Reihenfolge festlegen, BEVOR currentIndex bestimmt wird - der ist
+             ein Index in genau diese Liste. Wer danach sortiert, springt an
+             eine willkuerliche Stelle.
+
+             Ohne die Sortierung lief der sequenzielle Modus in
+             Hochladereihenfolge: getAll() liefert nach Schluessel, also nach
+             der autoIncrement-id. Begruendung in vergleicheNachKategorie. */
+          availableImages.sort(vergleicheNachKategorie);
           const currentIndex = availableImages.reduce((p, c, i) => c.selected ? i : p, null);
           if (constants.settings.slideshow.shuffle && availableImages.length > 2) {
             let x, counter = 0;

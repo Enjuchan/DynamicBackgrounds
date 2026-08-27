@@ -13,6 +13,39 @@ major release.
 
 ---
 
+## 3.10.1
+
+### Fixed
+
+- **With shuffle off, the slideshow goes through categories alphabetically
+  again.** It used to jump from A straight to E with two C categories in
+  between.
+
+  There was no ordering at all. The list comes from IndexedDB `getAll()`, which
+  returns records in key order, and the key is the auto-incrementing `id`. So
+  sequential mode ran in **upload order**, and categories came up in whatever
+  order their images had once been added.
+
+  It is sorted with the same comparison the manager already used for its own
+  category list, so what you see and what plays now match. Within a category the
+  order stays by `id`, which is how the images appear in the grid.
+
+  Both paths were affected and both are fixed: the slideshow tick and the
+  **Next background** button each had their own selection logic, and they now
+  share one comparison function so they cannot drift apart again.
+
+- **The manager window is opaque again.** Since 3.10.0 it had been see-through,
+  with the wallpaper showing through its own surfaces.
+
+  Making Discord's surfaces transparent turned out to include the plugin's own
+  interface, which took its colours from `var(--background-secondary)` and
+  `var(--background-tertiary)`. The fallback in those `var()` calls never
+  applied: the variable is defined, just as `transparent`.
+
+  The manager now uses fixed colours.
+
+---
+
 ## 3.10.0
 
 ### Added
