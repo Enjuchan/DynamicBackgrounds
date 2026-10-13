@@ -2,7 +2,7 @@
  * @name DynamicBackgrounds
  * @author Enju
  * @description Extends Discord themes with background images, slideshow, transitions and ambient effects.
- * @version 3.10.1
+ * @version 3.10.2
  * @source https://github.com/Enjuchan/DynamicBackgrounds/blob/main/DynamicBackgrounds.plugin.js
  * @updateUrl https://raw.githubusercontent.com/Enjuchan/DynamicBackgrounds/main/DynamicBackgrounds.plugin.js
  * @website https://github.com/Enjuchan/DynamicBackgrounds
@@ -87,6 +87,27 @@ const LEGACY_FALLBACK_CATEGORY = 'Standard';
    weiterschalten - den Takt der Diashow in slideShowManager.tick() und den
    Knopf "Next background" ueber onNextShuffle(). Beide hatten ihre eigene
    Auswahl, und eine Korrektur an nur einem Weg blieb ohne sichtbare Wirkung. */
+
+/* Naechste freie id fuer ein neues Bild.
+
+   Bewusst die HOECHSTE vorhandene id plus eins, nicht die ANZAHL plus eins.
+   Vorher stand an beiden Hinzufuege-Stellen `id: liste.length + 1`. Solange nur
+   hinzugefuegt wird, geht das gut - nach dem Loeschen eines Bildes nicht mehr:
+   Die Anzahl sinkt, die naechste vergebene id existiert bereits, und weil id
+   der keyPath der IndexedDB ist, ueberschreibt der put den vorhandenen
+   Datensatz. Ein Bild verschwindet dann still, ohne Fehlermeldung.
+
+   Bei 34 Bildern mit den ids 1..34 und einer Loeschung vergibt length + 1 die
+   34 erneut - und damit genau das Bild, das noch da ist. */
+function naechsteId(liste) {
+  let hoechste = 0;
+  for (const e of liste || []) {
+    const n = Number(e?.id);
+    if (Number.isFinite(n) && n > hoechste) hoechste = n;
+  }
+  return hoechste + 1;
+}
+
 function vergleicheNachKategorie(a, b) {
   const ka = a.category || FALLBACK_CATEGORY;
   const kb = b.category || FALLBACK_CATEGORY;
@@ -1731,7 +1752,7 @@ module.exports = meta => {
       // naechsten Oeffnen in voller Aufloesung.
       const thumb = await makeThumb(optimized);
       const img = new Image();
-      img.onload = () => setImages(prev => [...prev, { id: prev.length + 1, image: optimized, thumb, width: img.width, height: img.height, selected: false, src: img.src, category: currentCategory || FALLBACK_CATEGORY }]);
+      img.onload = () => setImages(prev => [...prev, { id: naechsteId(prev), image: optimized, thumb, width: img.width, height: img.height, selected: false, src: img.src, category: currentCategory || FALLBACK_CATEGORY }]);
       img.onerror = () => clearObjectURL(img);
       setObjectURL(img, optimized);
     }, [setImages, currentCategory]);
@@ -2659,7 +2680,7 @@ module.exports = meta => {
             const thumb = await makeThumb(blub);
             const image = new Image();
             image.onload = () => setImageFromIDB(storedImages => {
-              storedImages.push({ id: storedImages.length + 1, image: blub, thumb, width: image.width, height: image.height, selected: false, src: null });
+              storedImages.push({ id: naechsteId(storedImages), image: blub, thumb, width: image.width, height: image.height, selected: false, src: null });
               clearObjectURL(image);
               UI.showToast("Successfully added to DynamicBackgrounds", { type: 'success' });
             });

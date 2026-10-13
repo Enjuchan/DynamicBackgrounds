@@ -13,6 +13,16 @@ major release.
 
 ---
 
+## 3.10.2
+
+### Fixed
+
+- **Adding an image after deleting one no longer overwrites another image.**
+  New images got the id `number of images + 1`. After a deletion that number
+  already belonged to an existing image, and since the id is the IndexedDB key,
+  saving the new one silently replaced it. New images now get the highest
+  existing id plus one.
+
 ## 3.10.1
 
 ### Fixed
