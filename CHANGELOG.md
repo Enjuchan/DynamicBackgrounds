@@ -13,6 +13,68 @@ major release.
 
 ---
 
+## 3.11.0
+
+### Added
+
+- **The manager has a new header.** The current image is its background, with
+  the selection and the position in it next to a large play button. A ring
+  around the button shows the time until the next image. Next and Shuffle sit
+  beside it.
+  When the image changes, the new one is dealt in like a card, shown together
+  with a small preview card.
+
+- **The accent colour comes from the current image.** It glides along with the
+  image and a wave of colour runs out from the play button. Text on the accent
+  switches between light and dark automatically.
+
+- **One toolbar replaces the two rows of chips.** It holds the switch between
+  all images and favorites, the category field, buttons for adding images and
+  for the more-actions menu, and the settings button.
+
+- **Add tiles at the end of the grid.** With **Enable drop area** switched on,
+  the whole manager accepts dragged images.
+
+- **Category stacks lean toward the mouse and glow in the accent colour.** They
+  show their image count as a badge, and the mouse wheel flips through a stack.
+  The riffle on hover is softer.
+
+- **Opening a category flies its cards out of the stack** into their places,
+  and back again when it closes.
+
+- **Image tiles have a holographic shine that follows the mouse.** The current
+  image has a ring and a "Now" marker. Marking an image as a favorite plays a
+  small confetti burst. Delete asks on the tile itself, and the tile drops out afterwards.
+  Resolution, size and format show on hover.
+
+- **The window unfolds from the toolbar button.** The header buttons are
+  magnetic, and a soft light follows the mouse.
+
+- **Views for an empty library and an empty category, loading placeholders and
+  a styled error tile.** Empty categories appear in the overview and can be
+  opened. The ZIP export shows its progress.
+
+### Changed
+
+- **The settings page uses the accent colour, and all visible text is English.**
+  Some labels were German before, for example "Diashow aktivieren".
+
+- **Motion follows the system setting for reduced motion.**
+
+- **The manager is still when nothing happens.** Apart from the progress ring,
+  nothing animates; effects run on mouse movement, clicks and image changes.
+
+- **Add-image buttons always use the selected category.**
+
+### Fixed
+
+- **The manager no longer runs past the right edge of the Discord window.**
+  Discord's popout shell has a fixed width of 420px, and the manager is wider,
+  so it was cut off.
+
+- **Opening the manager just before a slideshow change left the background
+  empty until the next change.**
+
 ## 3.10.2
 
 ### Fixed

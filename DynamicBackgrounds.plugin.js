@@ -2,7 +2,7 @@
  * @name DynamicBackgrounds
  * @author Enju
  * @description Extends Discord themes with background images, slideshow, transitions and ambient effects.
- * @version 3.10.2
+ * @version 3.11.0
  * @source https://github.com/Enjuchan/DynamicBackgrounds/blob/main/DynamicBackgrounds.plugin.js
  * @updateUrl https://raw.githubusercontent.com/Enjuchan/DynamicBackgrounds/main/DynamicBackgrounds.plugin.js
  * @website https://github.com/Enjuchan/DynamicBackgrounds
@@ -21,7 +21,7 @@
 const { React, Webpack, UI, Webpack: { Filters }, Patcher, DOM, ContextMenu, Data } = BdApi;
 
 /** @type {typeof import("react")} */
-const { useState, useEffect, useRef, useCallback, useId, useMemo, createElement: jsx, Fragment } = React;
+const { useState, useEffect, useLayoutEffect, useRef, useCallback, useId, useMemo, createElement: jsx, Fragment } = React;
 
 const DATA_BASE_NAME = 'DynamicBackgrounds';
 
@@ -31,13 +31,24 @@ const DATA_BASE_NAME = 'DynamicBackgrounds';
    und ERST DANN ruecken die anderen nach. Laufen beide gleichzeitig los,
    ist die zweite Karte schon oben, bevor die erste weg ist - dann sieht es
    aus, als wuerde sie einfach erscheinen. */
-const STACK_TRAVEL_MS      = 900;  // Reise der obersten Karte (anheben, hinter den Stapel, einreihen)
-const STACK_SHIFT_MS       = 520;  // wie lange die uebrigen Karten zum Nachruecken brauchen
-const STACK_SHIFT_DELAY_MS = 350;  // warten, bis die Karte angehoben UND hinter dem Stapel ist
+const STACK_TRAVEL_MS      = 800;  // Reise der obersten Karte (anheben, hinter den Stapel, einreihen, nachfedern)
+const STACK_SHIFT_MS       = 480;  // wie lange die uebrigen Karten zum Nachruecken brauchen (federnde Kurve)
+const STACK_SHIFT_DELAY_MS = 300;  // warten, bis die Karte angehoben UND hinter dem Stapel ist
                                    // (der z-index-Wechsel liegt bei 38% von STACK_TRAVEL_MS)
 
 /* Sperre gegen erneutes Ausloesen: so lange, wie die laengste Bewegung dauert. */
 const STACK_ANIM_MS = Math.max(STACK_TRAVEL_MS, STACK_SHIFT_MS + STACK_SHIFT_DELAY_MS);
+
+/* Flug beim Oeffnen und Schliessen einer Kategorie: wie viele Kacheln fliegen,
+   Versatz zwischen ihnen und Dauer. Die Kurve ist die federnde des Managers. */
+const FLIGHT_MAX_TILES = 8;
+const FLIGHT_STAGGER_MS = 38;
+const FLIGHT_MS = 640;
+const FLIGHT_EASE = 'cubic-bezier(0.34, 1.56, 0.64, 1)';
+
+/* Wer Bewegung abgewaehlt hat, bekommt weder Flug noch Neigung noch Nachfedern.
+   Bei jedem Aufruf gelesen, damit eine Umstellung sofort gilt. */
+const prefersReducedMotion = () => !!window.matchMedia?.('(prefers-reduced-motion: reduce)').matches;
 
 /* ÜBERGÄNGE - laufen einmal beim Bildwechsel, Dauer aus den Einstellungen. */
 const transitionTypes = {
@@ -227,6 +238,26 @@ module.exports = meta => {
     } catch (e) { /* ignore */ }
   }
 
+  /* Der Zwischenspeicher der Diashow ist eine Kopie der Sammlung vom letzten
+     Speichern. Direkt nach dem Oeffnen des Managers stammt er noch vom
+     Schliessen und hat fuer nicht gewaehlte Bilder kein src, der Manager gilt
+     aber schon als offen und die Diashow erzeugt dann keine Quelle. Der Takt
+     holt sie hier nach; die URL gehoert der Diashow (_slideURL) und wird beim
+     naechsten Wechsel wieder freigegeben. */
+  function ensureSlideSrc(item) {
+    if (!item.src && item.image) {
+      item._slideURL = URL.createObjectURL(item.image);
+      item.src = item._slideURL;
+    }
+    return item.src;
+  }
+  function releaseSlideSrc(item) {
+    if (!item._slideURL) return;
+    try { URL.revokeObjectURL(item._slideURL); } catch (e) {}
+    if (item.src === item._slideURL) item.src = null;
+    item._slideURL = null;
+  }
+
   /* VORSCHAUBILDER ---------------------------------------------------------
 
      Das Raster zeigt Bilder auf rund 240px Breite, gespeichert sind sie aber in
@@ -404,6 +435,8 @@ module.exports = meta => {
   function useIDB(storeName = 'images') {
     /** @type [ImageItem[], React.Dispatch<React.SetStateAction<ImageItem[]>>] */
     const [items, setItems] = useState([]);
+    // Ohne diese Meldung wuerde die leere Liste vor dem Laden als leere Sammlung erscheinen.
+    const [ready, setReady] = useState(false);
     const countEffect = useRef(0);
     const accessDB = useCallback(/** @param {(storedItems: ImageItem[], database: IDBDatabase) => void} cb */ cb => {
       /** @type {IDBDatabase | undefined} db */
@@ -429,6 +462,7 @@ module.exports = meta => {
         /* Fehlende Vorschauen im Hintergrund nachrechnen. Solange sie fehlen,
            zeigt das Raster die Originale, es ist also nur langsam, nie leer. */
         backfillThumbs(storedItems, () => setItems(prev => [...prev]));
+        setReady(true);
       })
       return () => {
         accessDB((storedItems, db) => {
@@ -463,7 +497,7 @@ module.exports = meta => {
       }
     }, [items]);
 
-    return [items, setItems];
+    return [items, setItems, ready];
   };
 
   // Similar to useState, but also returns a ref with the current state. Useful when you need the most recent state when unmounting.
@@ -562,7 +596,8 @@ module.exports = meta => {
         onRequestClose();
       }, ctrl);
       addEventListener('keydown', e => {
-        e.key === 'Escape' && layerContainer.childElementCount === 1 && (onRequestClose(), e.stopPropagation())
+        // offene Loesch-Rueckfrage: Esc bricht nur diese ab
+        e.key === 'Escape' && !document.querySelector('.DynamicBackgrounds-confirm') && layerContainer.childElementCount === 1 && (onRequestClose(), e.stopPropagation())
       }, { capture: true, signal: ctrl.signal });
 
       return () => {
@@ -580,22 +615,417 @@ module.exports = meta => {
       "aria-modal": "true",
       style: { overflow: 'visible' },
       className: [constants.messagesPopoutClasses?.messagesPopoutWrap, 'DynamicBackgrounds-popoutWrap'].filter(Boolean).join(' '),
-    }, jsx('div', { className: 'DynamicBackgrounds-popoutInner' }, jsx(ManagerHead), jsx(ManagerBody)) )
+    }, jsx('div', { className: 'DynamicBackgrounds-popoutInner' }, jsx(ManagerBody)) )
   }
 
-  function ManagerHead() {
-    return jsx('div', {
-      className: [constants.messagesPopoutClasses?.header, 'DynamicBackgrounds-head'].filter(Boolean).join(' ')
-      }, jsx('h1', {
-        className: [constants.textStyles?.defaultColor, constants.textStyles?.['heading-md/medium']].join(' '),
-      }, "DynamicBackgrounds"));
+  const HEAD_ICONS = {
+    play: 'M8 5v14l11-7z',
+    pause: 'M6 5h4v14H6zM14 5h4v14h-4z',
+    next: 'M5 4l10 8-10 8zM17 4h3v16h-3z',
+    shuffle: 'M10.59 9.17L5.41 4 4 5.41l5.17 5.17 1.42-1.41zM14.5 4l2.04 2.04L4 18.59 5.41 20 17.96 7.46 20 9.5V4h-5.5zm.33 9.41l-1.41 1.41 3.13 3.13L14.5 20H20v-5.5l-2.04 2.04-3.13-3.13z'
+  };
+
+  /** Runder Knopf im Kopf. Das title-Attribut wird dort unterdrueckt, deshalb Discords Tooltip. */
+  function HeadButton({ label, tooltip, icon, size = 18, className, ...rest }) {
+    return jsx(constants.nativeUI.Tooltip, {
+      spacing: 8,
+      position: 'bottom',
+      color: 'primary',
+      hideOnClick: true,
+      text: tooltip || label,
+      children: ({ onContextMenu, ...tip }) => jsx('button', {
+        ...tip,
+        ...rest,
+        type: 'button',
+        'aria-label': label,
+        className: 'DynamicBackgrounds-headBtn' + (className ? ' ' + className : ''),
+        children: jsx('svg', { width: size, height: size, viewBox: '0 0 24 24', fill: 'currentColor', 'aria-hidden': 'true',
+          children: jsx('path', { d: HEAD_ICONS[icon] }) })
+      })
+    });
+  }
+
+  /** Das Bild hinter dem Kopf und die kleine scharfe Karte davor. Zwei Ebenen je Bild:
+      Das neue gleitet wie eine ausgeteilte Karte herein, das alte wird weggeschoben. */
+  function HeadBackdrop({ url }) {
+    const [st, setSt] = useState({ urls: [url || null, null], front: 0, n: 0 });
+    useEffect(() => {
+      if (!url || url === st.urls[st.front]) return;
+      let aus = false;
+      const img = new Image();
+      img.src = url;
+      // Erst blenden, wenn das Bild dekodiert ist, sonst blitzt die leere Ebene auf.
+      (img.decode ? img.decode() : Promise.resolve()).catch(() => {}).then(() => {
+        if (aus) return;
+        setSt(s => {
+          if (s.urls[s.front] === url) return s;
+          const hinten = 1 - s.front;
+          const urls = s.urls.slice();
+          urls[hinten] = url;
+          return { urls, front: hinten, n: s.n + 1 };
+        });
+      });
+      return () => { aus = true; };
+    }, [url]);
+    // "deal" und "out" gibt es erst nach dem ersten Wechsel, das erste Bild steht einfach da.
+    const zustand = i => st.front === i ? ' on' + (st.n ? ' deal' : '') : (st.n ? ' out' : '');
+    const ebenen = klasse => [0, 1].map(i => jsx('div', {
+      key: i,
+      'aria-hidden': 'true',
+      className: klasse + zustand(i),
+      style: st.urls[i] ? { backgroundImage: `url("${st.urls[i]}")` } : undefined
+    }));
+    return jsx(Fragment, null, [
+      jsx(Fragment, { key: 'bg' }, ebenen('DynamicBackgrounds-headBg')),
+      st.urls[st.front] ? jsx('div', { key: 'cards', className: 'DynamicBackgrounds-headCards', 'aria-hidden': 'true' }, ebenen('DynamicBackgrounds-headCard')) : null
+    ]);
+  }
+
+  /* Magnetische Knoepfe: Kommt die Maus naeher als das 1,5-fache der Knopfgroesse,
+     zieht sich der Knopf um wenige Pixel zu ihr hin und federt beim Verlassen
+     zurueck. Bewegt wird ueber translate, damit die Skalierung bei Hover und
+     Druck (transform) unberuehrt bleibt. Hoechstens eine Berechnung je Frame. */
+  function useMagnet(headRef) {
+    useEffect(() => {
+      const head = headRef.current;
+      const inner = head?.closest('.DynamicBackgrounds-popoutInner');
+      if (!inner || prefersReducedMotion()) return;
+      const ziele = head.querySelectorAll('.DynamicBackgrounds-headControls > .DynamicBackgrounds-headBtn, .DynamicBackgrounds-playWrap');
+      let pos = null, frame = 0;
+      const setzen = () => {
+        frame = 0;
+        for (const el of ziele) {
+          let dx = 0, dy = 0;
+          if (pos) {
+            const r = el.getBoundingClientRect();
+            // Die Mitte ohne die eigene Verschiebung, sonst schaukelt sich der Zug auf.
+            const cx = r.left + r.width / 2 - (el._mx || 0), cy = r.top + r.height / 2 - (el._my || 0);
+            const ax = pos.x - cx, ay = pos.y - cy;
+            const d = Math.hypot(ax, ay), radius = r.width * 1.5;
+            if (d < radius && d > 0) {
+              const zug = Math.min(7, d * 0.22) * (1 - d / radius * 0.5);
+              dx = ax / d * zug; dy = ay / d * zug;
+            }
+          }
+          el._mx = dx; el._my = dy;
+          el.style.translate = dx || dy ? `${dx.toFixed(1)}px ${dy.toFixed(1)}px` : '';
+        }
+      };
+      const planen = () => { if (!frame) frame = requestAnimationFrame(setzen); };
+      const onMove = e => { pos = { x: e.clientX, y: e.clientY }; planen(); };
+      const onLeave = () => { pos = null; planen(); };
+      inner.addEventListener('mousemove', onMove);
+      inner.addEventListener('mouseleave', onLeave);
+      return () => {
+        inner.removeEventListener('mousemove', onMove);
+        inner.removeEventListener('mouseleave', onLeave);
+        cancelAnimationFrame(frame);
+        for (const el of ziele) { el._mx = el._my = 0; el.style.translate = ''; }
+      };
+    }, []);
+  }
+
+  /** Farbwelle beim Bildwechsel: Ein Ring in der neuen Akzentfarbe laeuft vom Abspielknopf ueber das Fenster. */
+  function ColorWave({ onDone }) {
+    const ref = useRef(null);
+    useLayoutEffect(() => {
+      const el = ref.current;
+      const inner = el?.closest('.DynamicBackgrounds-popoutInner');
+      const play = inner?.querySelector('.DynamicBackgrounds-playWrap');
+      if (!inner || !play) { onDone(); return; }
+      const a = inner.getBoundingClientRect(), p = play.getBoundingClientRect();
+      const x = p.left + p.width / 2 - a.left, y = p.top + p.height / 2 - a.top;
+      const weit = Math.max(Math.hypot(x, y), Math.hypot(a.width - x, y), Math.hypot(x, a.height - y), Math.hypot(a.width - x, a.height - y));
+      el.style.setProperty('--wave-x', x + 'px');
+      el.style.setProperty('--wave-y', y + 'px');
+      el.style.setProperty('--wave-r', Math.round(weit * 1.2) + 'px');
+      // Notfall, falls das Ende der Animation nie gemeldet wird.
+      const t = setTimeout(onDone, 1600);
+      return () => clearTimeout(t);
+    }, []);
+    return jsx('div', { ref, className: 'DynamicBackgrounds-wave', 'aria-hidden': 'true' },
+      jsx('div', { className: 'DynamicBackgrounds-waveRing', onAnimationEnd: onDone }));
+  }
+
+  function formatInterval(ms) {
+    const s = Math.round(ms / 1000);
+    return s >= 60 && s % 60 === 0 ? `${s / 60} min` : `${s} s`;
+  }
+
+  /** Kopf des Managers als Buehne: laufendes Bild, Kategorie und die Bedienung der Diashow. */
+  function ManagerHead({ images, settings, currentId, clock, favoritesOnly, onToggleRun, onNext, onToggleShuffle }) {
+    const slideshow = settings.slideshow || {};
+    const current = images.find(i => i.id === currentId) || null;
+    const filters = slideshow.categoryFilters?.length ? slideshow.categoryFilters
+      : (slideshow.categoryFilter ? [slideshow.categoryFilter] : []);
+
+    const title = !images.length ? 'No images yet'
+      : favoritesOnly ? 'Favorites'
+      : filters.length === 1 ? filters[0]
+      : filters.length > 1 ? `${filters.length} categories`
+      : 'All images';
+
+    // Dieselbe Auswahl und Reihenfolge wie im Takt der Diashow (slideShowManager.tick).
+    const meta = useMemo(() => {
+      if (!images.length) return '';
+      let pool = images;
+      if (favoritesOnly) {
+        const favs = pool.filter(i => i.favorite);
+        pool = favs.length ? favs : images;
+      }
+      if (filters.length) pool = pool.filter(i => filters.includes(i.category || FALLBACK_CATEGORY));
+      const teile = [];
+      const pos = pool.slice().sort(vergleicheNachKategorie).findIndex(i => i.id === currentId);
+      if (pos >= 0) teile.push(`${pos + 1} of ${pool.length}`);
+      else if (pool.length) teile.push(`${pool.length} in rotation`);
+      if (slideshow.interval) teile.push(`every ${formatInterval(slideshow.interval)}`);
+      return teile.join(' · ');
+    }, [images, currentId, favoritesOnly, slideshow.categoryFilters, slideshow.categoryFilter, slideshow.interval]);
+
+    const running = !!slideshow.enabled;
+    const ringStyle = { '--ring-from': clock ? Math.min(1, clock.remaining / clock.total) : 1 };
+    const ringRunning = !!(clock && clock.running);
+    if (ringRunning) ringStyle['--ring-ms'] = Math.round(clock.remaining) + 'ms';
+
+    const headRef = useRef(null);
+    useMagnet(headRef);
+
+    return jsx('div', { ref: headRef, className: 'DynamicBackgrounds-head' + (current ? ' hasCard' : '') }, [
+      jsx(HeadBackdrop, { key: 'bg', url: current ? ensureThumbURL(current) : null }),
+      jsx('div', { key: 'shade', className: 'DynamicBackgrounds-headShade' }),
+      jsx('div', { key: 'text', className: 'DynamicBackgrounds-headText' }, [
+        jsx('div', { key: 'e', className: 'DynamicBackgrounds-headEyebrow' }, running ? 'Now playing' : 'Paused'),
+        jsx('div', { key: 't', className: 'DynamicBackgrounds-headTitle', title }, title),
+        jsx('div', { key: 'm', className: 'DynamicBackgrounds-headMeta' }, meta)
+      ]),
+      jsx('div', { key: 'controls', className: 'DynamicBackgrounds-headControls' }, [
+        jsx(HeadButton, {
+          key: 'shuffle', icon: 'shuffle', label: 'Shuffle',
+          tooltip: slideshow.shuffle ? 'Shuffle is on' : 'Shuffle is off',
+          'aria-pressed': !!slideshow.shuffle, onClick: onToggleShuffle
+        }),
+        jsx('div', { key: 'play', className: 'DynamicBackgrounds-playWrap' }, [
+          jsx('svg', { key: 'ring', className: 'DynamicBackgrounds-ring', viewBox: '0 0 72 72', 'aria-hidden': 'true' }, [
+            jsx('circle', { key: 't', className: 'DynamicBackgrounds-ringTrack', cx: 36, cy: 36, r: 33 }),
+            // Der key erneuert das Element bei jedem Wechsel, damit die Animation neu startet.
+            jsx('circle', {
+              key: 'b' + (clock ? clock.stamp : 0),
+              className: 'DynamicBackgrounds-ringBar' + (ringRunning ? ' running' : ''),
+              cx: 36, cy: 36, r: 33, pathLength: 1, style: ringStyle
+            })
+          ]),
+          jsx(HeadButton, {
+            icon: running ? 'pause' : 'play', size: 26, className: 'play',
+            label: running ? 'Pause the slideshow' : 'Start the slideshow',
+            onClick: onToggleRun
+          })
+        ]),
+        jsx(HeadButton, { key: 'next', icon: 'next', label: 'Show the next background now', onClick: onNext })
+      ])
+    ]);
+  }
+
+  /* ---- Neigung der Stapel zur Maus ----
+     Die Werte gehen als CSS-Variablen auf das Stapelelement (hoechstens einmal
+     je Frame) und werden erst vom Faecher darunter ausgewertet. So bleibt das
+     transform der einzelnen Karten unberuehrt. React kennt diese Variablen
+     nicht, ein Rendern setzt sie also nicht zurueck. */
+  /* Dieselbe Logik fuer Stapel und Kacheln, nur unterschiedlich stark. Mit
+     der Neigung setzt sie die Lichtreflex-Position (--holo-x/--holo-y in
+     Prozent der Karte), die der Holo-Glanz im CSS auswertet. Beim Stapel ist
+     die vorderste Karte das Bezugsmass (190x120, 52px ueber dem Boden des
+     Faechers), sonst bewegte sich der Reflex mit der Stapelflaeche statt mit
+     der Karte. */
+  function makeTilt(maxY, maxX, frontCard) {
+    return {
+      onMouseMove(e) {
+        if (prefersReducedMotion()) return;
+        const el = e.currentTarget;
+        el._tiltPos = { x: e.clientX, y: e.clientY };
+        if (el._tiltFrame) return;
+        el._tiltFrame = requestAnimationFrame(() => {
+          el._tiltFrame = 0;
+          const p = el._tiltPos;
+          if (!p) return;
+          const r = el.getBoundingClientRect();
+          const nx = Math.max(-1, Math.min(1, ((p.x - r.left) / r.width - 0.5) * 2));
+          const ny = Math.max(-1, Math.min(1, ((p.y - r.top) / r.height - 0.5) * 2));
+          el.style.setProperty('--tilt-y', (nx * maxY).toFixed(2) + 'deg');
+          el.style.setProperty('--tilt-x', (-ny * maxX).toFixed(2) + 'deg');
+          let hx = (p.x - r.left) / r.width, hy = (p.y - r.top) / r.height;
+          if (frontCard) {
+            const fan = el.querySelector('.DynamicBackgrounds-stackFan');
+            const top = r.top + (fan ? fan.offsetHeight : 176) - 52 - 120;
+            hx = (p.x - (r.left + r.width / 2 - 95)) / 190;
+            hy = (p.y - top) / 120;
+          }
+          el.style.setProperty('--holo-x', (Math.max(-0.2, Math.min(1.2, hx)) * 100).toFixed(1) + '%');
+          el.style.setProperty('--holo-y', (Math.max(-0.2, Math.min(1.2, hy)) * 100).toFixed(1) + '%');
+        });
+      },
+      onMouseLeave(e) {
+        const el = e.currentTarget;
+        el._tiltPos = null;
+        cancelAnimationFrame(el._tiltFrame);
+        el._tiltFrame = 0;
+        el.style.setProperty('--tilt-x', '0deg');
+        el.style.setProperty('--tilt-y', '0deg');
+      }
+    };
+  }
+  const stackTilt = makeTilt(7, 6, true);
+  const tileTilt = makeTilt(3.5, 3, false);
+
+  /* ---- Herz-Konfetti ----
+     Kurzlebige Elemente am body (die Kachel schneidet mit overflow ab), per
+     Web Animations bewegt und danach entfernt. Der Notfall-Timer raeumt auf,
+     falls onfinish nie kommt (z. B. abgebrochene Animation). */
+  const HEART_PATH = 'M12 21.35l-1.45-1.32C5.4 15.36 2 12.28 2 8.5 2 5.42 4.42 3 7.5 3c1.74 0 3.41.81 4.5 2.09C13.09 3.81 14.76 3 16.5 3 19.58 3 22 5.42 22 8.5c0 3.78-3.4 6.86-8.55 11.54L12 21.35z';
+  function heartConfetti(originEl, count) {
+    const r = originEl.getBoundingClientRect();
+    const cs = getComputedStyle(originEl);
+    const colors = [cs.getPropertyValue('--dbm-accent').trim() || '#ff4f9a', cs.getPropertyValue('--dbm-accent-2').trim() || '#8b5cf6'];
+    const cx = r.left + r.width / 2, cy = r.top + r.height / 2;
+    for (let i = 0; i < count; i++) {
+      const size = 12 + Math.random() * 10;
+      const p = document.createElement('div');
+      p.className = 'DynamicBackgrounds-confetti';
+      p.style.cssText = `position:fixed;left:${cx - size / 2}px;top:${cy - size / 2}px;width:${size}px;height:${size}px;pointer-events:none;z-index:2147483000;filter:drop-shadow(0 1px 3px rgba(0,0,0,0.55));color:${colors[i % 2]};`;
+      p.innerHTML = `<svg viewBox="0 0 24 24" width="100%" height="100%"><path fill="currentColor" d="${HEART_PATH}"/></svg>`;
+      document.body.appendChild(p);
+      const ang = (-90 + (Math.random() - 0.5) * 150) * Math.PI / 180;
+      const dist = 55 + Math.random() * 70;
+      const dx = Math.cos(ang) * dist, dy = Math.sin(ang) * dist;
+      const rot = (Math.random() - 0.5) * 220;
+      const dur = 650 + Math.random() * 250;
+      const remove = () => p.remove();
+      try {
+        const anim = p.animate([
+          { transform: 'translate(0px, 0px) rotate(0deg) scale(0.3)', opacity: 1 },
+          { transform: `translate(${dx}px, ${dy}px) rotate(${rot * 0.5}deg) scale(1)`, opacity: 1, offset: 0.45, easing: 'cubic-bezier(0.5, 0, 0.9, 0.6)' },
+          { transform: `translate(${dx * 1.4}px, ${dy + 70 + Math.random() * 30}px) rotate(${rot}deg) scale(0.6)`, opacity: 0 }
+        ], { duration: dur, easing: 'cubic-bezier(0.1, 0.7, 0.3, 1)', fill: 'forwards' });
+        anim.onfinish = remove;
+      } catch (err) { remove(); }
+      setTimeout(remove, dur + 400);
+    }
+  }
+
+  /* ---- Flug zwischen Stapel und Kacheln (FLIP) ----
+     Aufgenommen wird vor dem Umschalten, abgespielt nach dem Rendern. Die
+     Animationen laufen ohne bleibenden fill-Zustand (nur 'backwards' fuer die
+     Wartezeit): danach gelten wieder die normalen Styles, es gibt kein Springen
+     am Ende. */
+  function boxGeometry(el) {
+    const r = el.getBoundingClientRect();
+    const cs = getComputedStyle(el);
+    const m = new DOMMatrix(cs.transform === 'none' ? undefined : cs.transform);
+    return {
+      id: el.dataset.imgId,
+      cx: r.left + r.width / 2, cy: r.top + r.height / 2,
+      w: el.offsetWidth || r.width, h: el.offsetHeight || r.height,
+      // Versatz der eigenen Transformation: das Layout-Zentrum liegt um (e, f) daneben
+      e: m.e, f: m.f, ang: Math.atan2(m.b, m.a) * 180 / Math.PI,
+      matrix: cs.transform === 'none' ? 'translate(0px, 0px) rotate(0deg) scale(1, 1)' : cs.transform,
+      filter: cs.filter === 'none' ? 'brightness(1)' : cs.filter
+    };
+  }
+
+  /** Sichtbare Karten eines Stapels, hinterste zuerst. */
+  function stackCardsOf(grid, cat) {
+    const stack = Array.from(grid.querySelectorAll('[data-cat]')).find(e => e.dataset.cat === cat);
+    return stack ? Array.from(stack.querySelectorAll('img.DynamicBackgrounds-stackCard:not(.is-queued)')) : [];
+  }
+
+  function flyBetween(el, from, to, delay, fadeIn) {
+    // Startform: Zielkasten dort, wo die Quelle liegt (Mittelpunkt, Groesse, Drehung)
+    const dx = from.cx - (to.cx - to.e), dy = from.cy - (to.cy - to.f);
+    const start = `translate(${dx}px, ${dy}px) rotate(${from.ang}deg) scale(${from.w / to.w}, ${from.h / to.h})`;
+    return el.animate([
+      { transform: start, opacity: fadeIn ? 0 : 1, filter: from.filter },
+      { transform: to.matrix, opacity: 1, filter: to.filter }
+    ], { duration: FLIGHT_MS, delay, easing: FLIGHT_EASE, fill: 'backwards' });
+  }
+
+  function revealElement(el, delay) {
+    return el.animate([
+      { opacity: 0, transform: 'translateY(10px)' },
+      { opacity: 1, transform: 'translateY(0px)' }
+    ], { duration: 340, delay, easing: 'cubic-bezier(0.22, 1, 0.36, 1)', fill: 'backwards' });
+  }
+
+  /** Spielt den Flug nach dem Umschalten ab und gibt die Animationen zurueck. */
+  function runFlight(grid, f, reduced) {
+    const anims = [];
+    if (reduced) {
+      anims.push(grid.animate([{ opacity: 0 }, { opacity: 1 }], { duration: 160, easing: 'ease-out' }));
+      return anims;
+    }
+    const kids = Array.from(grid.children);
+    const topOf = el => { let k = el; while (k && k.parentElement !== grid) k = k.parentElement; return k; };
+    const flown = new Set();
+    const source = f.source;
+    if (f.cat) {
+      // Oeffnen: die Kacheln fliegen aus dem Stapel an ihre Plaetze
+      const front = source[source.length - 1];
+      const tiles = Array.from(grid.querySelectorAll('.DynamicBackgrounds-imageWrapper')).slice(0, FLIGHT_MAX_TILES);
+      if (front) tiles.forEach((tile, i) => {
+        const from = source.find(g => g.id === tile.dataset.imgId);
+        anims.push(flyBetween(tile, from || { ...front, w: front.w * 0.5, h: front.h * 0.5 }, boxGeometry(tile), i * FLIGHT_STAGGER_MS, !from));
+        flown.add(topOf(tile));
+      });
+      const bar = grid.parentElement?.querySelector('.DynamicBackgrounds-categoryBar');
+      if (bar) anims.push(revealElement(bar, 0));
+    } else {
+      // Schliessen: die Karten der Herkunftskategorie sammeln sich aus den Kacheln
+      const first = source[0];
+      const cards = stackCardsOf(grid, f.from);
+      if (first && cards.length) {
+        cards.forEach((card, i) => {
+          const from = source.find(g => g.id === card.dataset.imgId);
+          anims.push(flyBetween(card, from || { ...first, w: first.w * 0.6, h: first.h * 0.6, ang: 0 }, boxGeometry(card), i * FLIGHT_STAGGER_MS, !from));
+        });
+        const stack = topOf(cards[0]);
+        flown.add(stack);
+        stack.querySelectorAll('.DynamicBackgrounds-categoryLabel, .DynamicBackgrounds-stackBadge').forEach(el => anims.push(revealElement(el, 160)));
+      }
+    }
+    kids.filter(k => !flown.has(k)).forEach((k, i) => anims.push(revealElement(k, 120 + Math.min(i, 12) * 32)));
+    return anims;
   }
 
   function ManagerBody() {
-    const [images, setImages] = useIDB();
+    const [images, setImages, imagesReady] = useIDB();
     const [settings, setSettings] = useSettings();
     const [stackOffsets, setStackOffsets] = useState({});
     const [stackAnimating, setStackAnimating] = useState({});
+    const gridRef = useRef(null);
+    const flightRef = useRef(null);     // Aufnahme vor dem Umschalten, wartet auf das Rendern
+    const flightAnims = useRef([]);
+    const stackLock = useRef({});       // je Kategorie: laeuft eine Mischung, ist eine vorgemerkt
+    const stackLen = useRef({});        // Bildanzahl je Kategorie, vom Rendern gepflegt
+    const wheelAcc = useRef({ sum: 0, last: 0 });
+    /* Mischt einen Stapel um einen Schritt (dir 1 vor, -1 zurueck). Waehrend
+       einer laufenden Mischung wird hoechstens ein Schritt vorgemerkt. */
+    const rotateStack = useCallback((cat, dir) => {
+      const st = stackLock.current[cat] || (stackLock.current[cat] = { busy: false, pending: 0 });
+      if (st.busy) { st.pending = dir; return; }
+      const m = stackLen.current[cat] || 0;
+      if (m < 1) return;
+      st.busy = true;
+      setStackAnimating(prev => ({ ...prev, [cat]: dir > 0 ? true : 'back' }));
+      setStackOffsets(prev => ({ ...prev, [cat]: (((prev[cat] || 0) + dir) % m + m) % m }));
+      // Sperre gegen erneutes Ausloesen waehrend der Bewegung
+      setTimeout(() => {
+        st.busy = false;
+        setStackAnimating(prev => ({ ...prev, [cat]: false }));
+        if (st.pending) { const d = st.pending; st.pending = 0; rotateStack(cat, d); }
+      }, STACK_ANIM_MS);
+    }, []);
+    const cancelFlight = () => {
+      flightAnims.current.forEach(a => a.cancel());
+      flightAnims.current = [];
+    };
     const [showCategoryInput, setShowCategoryInput] = useState(false);
     const [newCategoryName, setNewCategoryName] = useState('');
     const categoryInputRef = useRef(null);
@@ -604,6 +1034,35 @@ module.exports = meta => {
     const [slideshowFavoritesOnly, setSlideshowFavoritesOnly] = useState(constants.settings?.slideshow?.favoritesOnly || false);
     // Export Overlay State
     const [showExportOverlay, setShowExportOverlay] = useState(false);
+    // Anteil der gelesenen Bilder beim ZIP-Export; null, solange kein Export laeuft
+    const [zipProgress, setZipProgress] = useState(null);
+
+    /* Takt und laufendes Bild fuer den Kopf. Die Diashow waehlt Bilder, ohne den
+       Zustand dieser Komponente zu kennen; sie meldet jeden Wechsel, und das
+       laufende Bild wird dann aus ihrem Zwischenspeicher gelesen. */
+    const [clock, setClock] = useState(() => {
+      const t = slideShowManager.getTiming();
+      return t && { ...t, endAt: Date.now() + t.remaining, stamp: 0 };
+    });
+    const [liveSelectedId, setLiveSelectedId] = useState(null);
+    useEffect(() => {
+      let zaehler = 0;
+      const lesen = () => {
+        const t = slideShowManager.getTiming();
+        /* Eine Meldung mit demselben Ende ist keine neue Runde. Die Diashow
+           meldet einen Wechsel zweimal (Takt und gespeichertes Bild); die
+           zweite Meldung wuerde den Ring sonst mitten im Lauf neu starten. */
+        setClock(prev => {
+          if (!t) return null;
+          const endAt = Date.now() + t.remaining;
+          if (prev && prev.running === t.running && prev.total === t.total && Math.abs(prev.endAt - endAt) < 150) return prev;
+          return { ...t, endAt, stamp: ++zaehler };
+        });
+        const sel = (constants._cachedImages || []).find(e => e.selected);
+        if (sel) setLiveSelectedId(sel.id);
+      };
+      return slideShowManager.subscribe(lesen);
+    }, []);
     // Bildübersicht bleibt immer gleich (nur Kategorie-Filter)
     const filteredImages = useMemo(() => {
       let imgs = images;
@@ -844,6 +1303,7 @@ module.exports = meta => {
       }
     }, [images]);
     const handleSelect = useCallback(index => {
+      setLiveSelectedId(index);
       setImages(prev => {
         prev.forEach(e => {
           e.selected = e.id === index;
@@ -956,6 +1416,7 @@ module.exports = meta => {
       try {
         const entries = [];
         const usedNames = new Set();
+        setZipProgress(0);
 
         for (const img of filteredImages) {
           let blob;
@@ -987,6 +1448,7 @@ module.exports = meta => {
           usedNames.add(name);
 
           entries.push({ name, data: new Uint8Array(await blob.arrayBuffer()) });
+          setZipProgress(entries.length / filteredImages.length);
         }
 
         if (!entries.length) return UI.showToast('No images to export', { type: 'info' });
@@ -1006,198 +1468,352 @@ module.exports = meta => {
       } catch (error) {
         console.error('ZIP Download failed:', error);
         UI.showToast("Could not create the ZIP file: " + error.message, { type: 'error' });
+      } finally {
+        // kurz stehen lassen, damit der Balken sein Ende erreicht, bevor er verschwindet
+        setTimeout(() => setZipProgress(null), 400);
       }
     }, [filteredImages]);
 
+    /* Loeschen und Umsortieren nummerieren die ids neu, und zwar an denselben
+       Objekten. Gemerkt wird deshalb das Objekt zur id, nicht die id selbst:
+       Dessen id stimmt nach dem Neunummerieren weiter. Bewusst nur an
+       liveSelectedId gebunden, sonst wuerde nach dem Neunummerieren wieder ueber
+       die alte id gesucht. Fehlt das Objekt (geloescht), gilt das selected-Flag. */
+    const liveItem = useMemo(() => images.find(i => i.id === liveSelectedId) || null, [liveSelectedId]);
+    const currentId = (liveItem && images.includes(liveItem) ? liveItem.id : null) ?? images.find(i => i.selected)?.id ?? null;
+
+    /* Farbwelle: eine je Wechsel des laufenden Bildes. Das erste Bild nach dem
+       Oeffnen (vorher null) loest keine aus. */
+    const [waveKey, setWaveKey] = useState(0);
+    const letzteId = useRef(currentId);
+    useEffect(() => {
+      const vorher = letzteId.current;
+      letzteId.current = currentId;
+      if (vorher != null && currentId != null && vorher !== currentId && !prefersReducedMotion()) setWaveKey(k => k + 1);
+    }, [currentId]);
+
+    /* Hochladen: der ganze Manager nimmt Dateien an. Die Ereignisse haengen am
+       Fenster selbst und nicht an einer Flaeche, damit auch der Kopf und die
+       Leiste Ziel sind. Ein Zaehler faengt die dragleave-Ereignisse ab, die beim
+       Wechsel zwischen Kindelementen entstehen. */
+    const upload = useUploader(setImages, settings.selectedCategory);
+    const uploadRef = useRef(upload);
+    uploadRef.current = upload;
+    const contentRef = useRef(null);
+    const [dragging, setDragging] = useState(false);
+    useEffect(() => {
+      const inner = contentRef.current?.closest('.DynamicBackgrounds-popoutInner');
+      if (!inner) return;
+      let tiefe = 0;
+      // Nur Dateien und Adressen von aussen. Das Umsortieren der Kacheln zieht
+      // ebenfalls ein Bild und darf die Abdeckung nicht ausloesen.
+      const relevant = e => {
+        const t = e.dataTransfer?.types;
+        return !!t && (t.includes('Files') || t.includes('text/uri-list')) && !inner.querySelector('.DynamicBackgrounds-imageWrapper.dragging');
+      };
+      const onEnter = e => { if (!relevant(e)) return; e.preventDefault(); tiefe++; setDragging(true); };
+      const onOver = e => { if (!relevant(e)) return; e.preventDefault(); e.dataTransfer.dropEffect = 'copy'; };
+      const onLeave = e => { if (!relevant(e)) return; tiefe = Math.max(0, tiefe - 1); if (!tiefe) setDragging(false); };
+      // Wurde das Ziehen ohne dragleave beendet (Abbruch mit Esc), kommt als Erstes eine Mausbewegung.
+      const onMove = () => { if (tiefe) { tiefe = 0; setDragging(false); } };
+      const onDrop = e => { if (!relevant(e)) return; e.preventDefault(); tiefe = 0; setDragging(false); uploadRef.current.handleDrop(e); };
+      // Einfuegen aus der Zwischenablage; Textfelder behalten ihr eigenes Einfuegen.
+      const onPaste = e => {
+        if (e.target?.closest?.('input, textarea, [contenteditable="true"]')) return;
+        uploadRef.current.handlePaste(e);
+      };
+      /* Ziehen nur mit "Enable drop area": Ohne die Einstellung liegt Discords eigene
+         Ablageflaeche ueber dem Manager und nimmt die Datei fuer den Kanal an. Die
+         Abdeckung wuerde dann etwas versprechen, das nicht passiert. */
+      const ziehenAn = !!constants.settings.enableDrop;
+      if (ziehenAn) {
+        inner.addEventListener('dragenter', onEnter);
+        inner.addEventListener('dragover', onOver);
+        inner.addEventListener('dragleave', onLeave);
+        inner.addEventListener('drop', onDrop);
+      }
+      inner.addEventListener('paste', onPaste);
+      inner.addEventListener('mousemove', onMove);
+      // Der Fokus liegt im Fenster, damit Strg+V ankommt.
+      inner.closest('[role="dialog"]')?.focus({ preventScroll: true });
+      return () => {
+        inner.removeEventListener('dragenter', onEnter);
+        inner.removeEventListener('dragover', onOver);
+        inner.removeEventListener('dragleave', onLeave);
+        inner.removeEventListener('drop', onDrop);
+        inner.removeEventListener('paste', onPaste);
+        inner.removeEventListener('mousemove', onMove);
+      };
+    }, []);
+
+    /* Lichtschein unter dem Mauszeiger: Die Ebene gibt es nur, solange die Maus im
+       Fenster ist. Der Schein liegt hinter dem Inhalt (z-index -1 in der eigenen
+       Stapelebene des Fensters) und wird nur ueber transform verschoben. */
+    useEffect(() => {
+      const inner = contentRef.current?.closest('.DynamicBackgrounds-popoutInner');
+      if (!inner || prefersReducedMotion()) return;
+      let klammer = null, pos = null, frame = 0;
+      const setzen = () => {
+        frame = 0;
+        if (!klammer || !pos) return;
+        const r = inner.getBoundingClientRect();
+        klammer.style.setProperty('--glow-x', (pos.x - r.left - 220).toFixed(0) + 'px');
+        klammer.style.setProperty('--glow-y', (pos.y - r.top - 220).toFixed(0) + 'px');
+      };
+      const onMove = e => {
+        pos = { x: e.clientX, y: e.clientY };
+        if (!klammer) {
+          klammer = document.createElement('div');
+          klammer.className = 'DynamicBackgrounds-glowClip';
+          klammer.setAttribute('aria-hidden', 'true');
+          klammer.appendChild(document.createElement('div')).className = 'DynamicBackgrounds-glow';
+          inner.insertBefore(klammer, inner.firstChild);
+        }
+        if (!frame) frame = requestAnimationFrame(setzen);
+      };
+      const weg = () => {
+        cancelAnimationFrame(frame); frame = 0; pos = null;
+        klammer?.remove(); klammer = null;
+      };
+      inner.addEventListener('mousemove', onMove);
+      inner.addEventListener('mouseleave', weg);
+      return () => {
+        inner.removeEventListener('mousemove', onMove);
+        inner.removeEventListener('mouseleave', weg);
+        weg();
+      };
+    }, []);
+
+    useEffect(() => { if (showCategoryInput) categoryInputRef.current?.focus(); }, [showCategoryInput]);
+
+    /* Mausrad ueber einem Stapel blaettert ihn. Nativ und nicht passiv
+       angemeldet, weil React Rad-Ereignisse passiv behandelt und dort kein
+       preventDefault geht. Kleine Trackpad-Schritte werden aufsummiert; erst
+       ab der Schwelle gibt es einen Mischschritt. */
+    useEffect(() => {
+      const grid = gridRef.current;
+      if (!grid) return;
+      const onWheel = e => {
+        if (e.ctrlKey) return;
+        const stack = e.target.closest?.('.DynamicBackgrounds-categoryStack');
+        if (!stack || !stack.dataset.cat) return;
+        e.preventDefault();
+        const acc = wheelAcc.current;
+        const now = performance.now();
+        if (now - acc.last > 250) acc.sum = 0;
+        acc.last = now;
+        acc.sum += e.deltaY * (e.deltaMode === 1 ? 16 : e.deltaMode === 2 ? 100 : 1);
+        if (Math.abs(acc.sum) < 60) return;
+        const dir = acc.sum > 0 ? 1 : -1;
+        acc.sum = 0;
+        rotateStack(stack.dataset.cat, dir);
+      };
+      grid.addEventListener('wheel', onWheel, { passive: false });
+      return () => grid.removeEventListener('wheel', onWheel);
+    }, [rotateStack]);
+
+    /* Jeder Wechsel zwischen Uebersicht und Kategorie laeuft hier durch: erst
+       laufende Fluege abbrechen (damit ein Klick mitten im Flug nichts
+       verdreht), dann die Ausgangslage aufnehmen, dann umschalten. */
+    const switchCategory = (cat) => {
+      cancelFlight();
+      const grid = gridRef.current;
+      const from = settings.selectedCategory;
+      flightRef.current = grid ? {
+        t: Date.now(), cat, from,
+        source: (cat ? stackCardsOf(grid, cat) : Array.from(grid.querySelectorAll('.DynamicBackgrounds-imageWrapper')).slice(0, FLIGHT_MAX_TILES)).map(boxGeometry)
+      } : null;
+      setSettings(prev => ({ ...prev, selectedCategory: cat }));
+    };
+    useLayoutEffect(() => {
+      const f = flightRef.current;
+      flightRef.current = null;
+      const grid = gridRef.current;
+      if (!f || !grid || Date.now() - f.t > 1000) return;
+      // Der Flug ist Zierde: scheitert er, muss der Wechsel trotzdem stehen.
+      try { flightAnims.current = runFlight(grid, f, prefersReducedMotion()); }
+      catch (err) { console.warn('DynamicBackgrounds: category flight failed', err); }
+    }, [settings.selectedCategory]);
+    useEffect(() => cancelFlight, []);
+
+    /* Letzte Kachel des Rasters: in einer Kategorie ein Platz fuer neue Bilder,
+       in der Uebersicht ein leerer Stapel fuer eine neue Kategorie. */
+    const plusIcon = jsx('svg', { width: 36, height: 36, viewBox: '0 0 24 24', fill: 'currentColor', 'aria-hidden': 'true', children: jsx('path', { d: BAR_ICONS.plus }) });
+    const addTile = settings.selectedCategory
+      ? jsx('button', {
+          key: 'add-tile',
+          type: 'button',
+          className: 'DynamicBackgrounds-addTile',
+          'aria-label': `Add images to ${settings.selectedCategory}`,
+          onClick: upload.handleUpload,
+          children: jsx('span', { className: 'DynamicBackgrounds-addFace' }, plusIcon)
+        })
+      : jsx('button', {
+          key: 'add-tile',
+          type: 'button',
+          className: 'DynamicBackgrounds-addTile stack',
+          'aria-label': 'New category',
+          onMouseMove: stackTilt.onMouseMove,
+          onMouseLeave: stackTilt.onMouseLeave,
+          onClick: () => setShowCategoryInput(s => !s),
+          children: [
+            jsx('div', { key: 'fan', className: 'DynamicBackgrounds-stackFan' },
+              jsx('span', { className: 'DynamicBackgrounds-addFace stack' }, plusIcon)),
+            jsx('div', { key: 'label', className: 'DynamicBackgrounds-categoryLabel' },
+              jsx('span', { className: 'DynamicBackgrounds-categoryName' }, 'New category'))
+          ]
+        });
+
+    const emptyHint = constants.settings.enableDrop
+      ? 'Drop images anywhere in this window or paste them'
+      : 'Paste images or use the add button';
+    const emptyView = !imagesReady ? null
+      : (!settings.selectedCategory && !images.length)
+        ? jsx(EmptyState, { key: 'empty', title: 'No backgrounds yet', hint: emptyHint, onAdd: upload.handleUpload })
+        : (settings.selectedCategory && !filteredImages.length)
+          ? jsx(EmptyState, { key: 'empty-category', title: 'This category is empty', hint: emptyHint, onAdd: upload.handleUpload })
+          : null;
+
     return jsx(Fragment, {
       children: [
+        jsx(ManagerHead, {
+          key: 'head',
+          images, settings, currentId, clock,
+          favoritesOnly: slideshowFavoritesOnly,
+          onNext: onNextShuffle,
+          onToggleRun: () => {
+            const next = !settings.slideshow?.enabled;
+            setSettings(prev => ({ ...prev, slideshow: { ...prev.slideshow, enabled: next } }));
+            next ? slideShowManager.start() : slideShowManager.stop();
+          },
+          onToggleShuffle: () => setSettings(prev => ({ ...prev, slideshow: { ...prev.slideshow, shuffle: !prev.slideshow?.shuffle } }))
+        }),
+        waveKey ? jsx(ColorWave, { key: 'wave' + waveKey, onDone: () => setWaveKey(k => (k === waveKey ? 0 : k)) }) : null,
         jsx('div', {
-          className: [constants.messagesPopoutClasses?.messageGroupWrapper, constants.markupStyles?.markup, constants.messagesPopoutClasses?.messagesPopout].join(' '),
-          style: { display: "grid", gridTemplateRows: 'auto auto auto 1fr', overflowX: 'visible', overflowY: 'hidden', border: '0' },
+          ref: contentRef,
+          className: [constants.messagesPopoutClasses?.messageGroupWrapper, constants.markupStyles?.markup, constants.messagesPopoutClasses?.messagesPopout, 'DynamicBackgrounds-content'].join(' '),
           children: [
-            jsx(InputComponent, { setImages, currentCategory: settings.selectedCategory }),
             /* WERKZEUGLEISTE
-               Zwei beschriftete Zeilen statt einer Reihe gleich aussehender
-               Knoepfe. "Favorites" allein sagt niemandem, ob damit gefiltert,
-               markiert oder geloescht wird - erst die Ueberschrift "Slideshow"
-               darueber macht klar, worauf sich der Schalter bezieht.
-               Zeile 1 steuert, WAS laeuft. Zeile 2 verwaltet die Sammlung. */
+               Eine einzige Reihe. Links die Bildauswahl der Diashow und die
+               Kategorien, mit denen sie arbeitet; rechts die Knoepfe fuer die
+               Sammlung. Das Ueberlaufmenue nimmt alles Seltene auf, auch die
+               Speichergroesse, die frueher in einer eigenen Zeile stand. */
             jsx('div', {
+              key: 'toolbar',
               className: 'DynamicBackgrounds-toolbar',
               children: [
-                jsx('div', {
-                  key: 'row-slideshow',
-                  className: 'DynamicBackgrounds-toolRow',
-                  children: [
-                    jsx('span', { key: 'l', className: 'DynamicBackgrounds-toolLabel' }, 'Slideshow'),
-
-                    // Diashow anhalten und fortsetzen
-                    jsx('button', {
-                      key: 'play',
-                      className: 'DynamicBackgrounds-chip' + (settings.slideshow?.enabled ? ' active' : ''),
-                      title: settings.slideshow?.enabled ? 'Pause the slideshow' : 'Start the slideshow',
-                      onClick: () => {
-                        const next = !settings.slideshow?.enabled;
-                        setSettings(prev => ({ ...prev, slideshow: { ...prev.slideshow, enabled: next } }));
-                        next ? slideShowManager.start() : slideShowManager.stop();
-                      },
-                      children: [
-                        jsx('svg', { key: 'i', width: 13, height: 13, viewBox: '0 0 24 24', fill: 'currentColor',
-                          children: settings.slideshow?.enabled
-                            ? jsx('path', { d: 'M6 5h4v14H6zM14 5h4v14h-4z' })
-                            : jsx('path', { d: 'M7 4l13 8-13 8z' }) }),
-                        jsx('span', { key: 't' }, settings.slideshow?.enabled ? 'Running' : 'Paused')
-                      ]
-                    }),
-
-                    // Favoriten-Filter
-                    jsx('button', {
-                      key: 'fav',
-                      className: 'DynamicBackgrounds-chip' + (slideshowFavoritesOnly ? ' active' : ''),
-                      title: slideshowFavoritesOnly ? 'Slideshow uses favorites only' : 'Slideshow uses all images',
-                      onClick: () => {
-                        setSlideshowFavoritesOnly(prev => {
-                          const next = !prev;
-                          setSettings(s2 => ({ ...s2, slideshow: { ...s2.slideshow, favoritesOnly: next } }));
-                          return next;
-                        });
-                      },
-                      children: [
-                        jsx('svg', { key: 'i', width: 15, height: 15, viewBox: '0 0 24 24', fill: slideshowFavoritesOnly ? '#FFD700' : 'none', stroke: slideshowFavoritesOnly ? '#FFD700' : 'currentColor', strokeWidth: 2, strokeLinecap: 'round', strokeLinejoin: 'round',
-                          children: jsx('path', { d: 'M12 17.27L18.18 21l-1.64-7.03L22 9.24l-7.19-.61L12 2 9.19 8.63 2 9.24l5.46 4.73L5.82 21z' }) }),
-                        jsx('span', { key: 't' }, slideshowFavoritesOnly ? 'Favorites only' : 'All images')
-                      ]
-                    }),
-
-                    jsx(CategoryQuickButton, {
-                      key: 'cats',
-                      categories: allCategories,
-                      value: settings.slideshow?.categoryFilters || (settings.slideshow?.categoryFilter ? [settings.slideshow.categoryFilter] : []),
-                      onChange: arr => setSettings(prev => ({ ...prev, slideshow: { ...prev.slideshow, categoryFilters: Array.isArray(arr) ? arr : (arr ? [arr] : []), categoryFilter: Array.isArray(arr) && arr.length === 1 ? arr[0] : (typeof arr === 'string' ? arr : null) } })),
-                    }),
-
-                    jsx('button', {
-                      key: 'next',
-                      className: 'DynamicBackgrounds-chip',
-                      title: 'Show the next background now',
-                      onClick: onNextShuffle,
-                      children: [
-                        jsx('svg', { key: 'i', width: 13, height: 13, viewBox: '0 0 24 24', fill: 'currentColor',
-                          children: jsx('path', { d: 'M5 4l10 8-10 8zM17 4h3v16h-3z' }) }),
-                        jsx('span', { key: 't' }, 'Next')
-                      ]
-                    }),
-
-                    /* Ueberlaufmenue und Einstellungen bilden rechts eine eigene
-                       Gruppe mit Abstand - sie gehoeren nicht zu den Filtern. */
-                    jsx('div', {
-                      key: 'end',
-                      className: 'DynamicBackgrounds-toolEnd',
-                      children: [
-                        jsx('button', {
-                          key: 'more',
-                          className: 'DynamicBackgrounds-iconButton',
-                          title: 'More actions',
-                          'aria-label': 'More actions',
-                          onClick: e => {
-                            e.preventDefault();
-                            const cats = allCategories;
-                            ContextMenu.open(e, ContextMenu.buildMenu([
-                              {
-                                label: 'Open category',
-                                type: 'submenu',
-                                items: [
-                                  { label: 'All categories', action: () => setSettings(prev => ({ ...prev, selectedCategory: null })) },
-                                  { type: 'separator' },
-                                  ...cats.map(cat => ({
-                                    label: cat + (groupedByCategory[cat] && groupedByCategory[cat].length
-                                      ? ' (' + groupedByCategory[cat].length + ')' : ' (empty)'),
-                                    action: () => setSettings(prev => ({ ...prev, selectedCategory: cat }))
-                                  }))
-                                ]
-                              },
-                              { type: 'separator' },
-                              {
-                                label: 'Remove all favorites',
-                                danger: true,
-                                action: () => {
-                                  try {
-                                    if (!images || !images.some(i => i.favorite)) return UI.showToast('No favorites present.', { type: 'info' });
-                                    if (confirm('Remove all favorites?')) {
-                                      setImages(prev => prev.map(i => ({ ...i, favorite: false })));
-                                      UI.showToast('All favorites removed.', { type: 'success' });
-                                    }
-                                  } catch (err) { console.error(err); UI.showToast('Error removing favorites.', { type: 'error' }); }
-                                }
-                              }
-                            ]));
-                          },
-                          children: jsx('svg', { width: 18, height: 18, viewBox: '0 0 24 24', fill: 'currentColor', children: [
-                            jsx('circle', { key: 'a', cx: 5, cy: 12, r: 1.7 }),
-                            jsx('circle', { key: 'b', cx: 12, cy: 12, r: 1.7 }),
-                            jsx('circle', { key: 'c', cx: 19, cy: 12, r: 1.7 })
-                          ] })
-                        }),
-                        jsx(InPopoutSettings, { key: 'settings', rerender: setImages })
-                      ]
-                    })
+                jsx(SegmentSwitch, {
+                  key: 'seg',
+                  label: 'Images used by the slideshow',
+                  value: slideshowFavoritesOnly,
+                  onChange: next => {
+                    setSlideshowFavoritesOnly(next);
+                    setSettings(s2 => ({ ...s2, slideshow: { ...s2.slideshow, favoritesOnly: next } }));
+                  },
+                  options: [
+                    { value: false, label: 'All images', tooltip: 'Slideshow uses all images' },
+                    { value: true, label: 'Favorites', icon: BAR_ICONS.star, tooltip: 'Slideshow uses favorites only' }
                   ]
                 }),
 
+                jsx(CategoryQuickButton, {
+                  key: 'cats',
+                  categories: allCategories,
+                  value: settings.slideshow?.categoryFilters || (settings.slideshow?.categoryFilter ? [settings.slideshow.categoryFilter] : []),
+                  onChange: arr => setSettings(prev => ({ ...prev, slideshow: { ...prev.slideshow, categoryFilters: Array.isArray(arr) ? arr : (arr ? [arr] : []), categoryFilter: Array.isArray(arr) && arr.length === 1 ? arr[0] : (typeof arr === 'string' ? arr : null) } })),
+                }),
+
                 jsx('div', {
-                  key: 'row-library',
-                  className: 'DynamicBackgrounds-toolRow',
+                  key: 'end',
+                  className: 'DynamicBackgrounds-toolEnd',
                   children: [
-                    jsx('span', { key: 'l', className: 'DynamicBackgrounds-toolLabel' }, 'Library'),
-                    jsx('button', {
-                      key: 'newcat',
-                      className: 'DynamicBackgrounds-chip',
-                      title: 'Create a new category',
-                      onClick: () => setShowCategoryInput(!showCategoryInput),
-                      children: [jsx('span', { key: 'p', style: { fontSize: '15px', lineHeight: 1 } }, '+'), jsx('span', { key: 't' }, 'New category')]
+                    jsx(BarButton, {
+                      key: 'add',
+                      className: 'primary',
+                      label: 'Add images',
+                      tooltip: settings.selectedCategory ? `Add images to ${settings.selectedCategory}` : 'Add images',
+                      path: BAR_ICONS.addImage,
+                      onClick: upload.handleUpload
                     }),
-                    jsx('button', {
-                      key: 'export',
-                      className: 'DynamicBackgrounds-chip',
-                      title: 'Save all images as a ZIP file',
-                      onClick: () => setShowExportOverlay(true),
-                      children: [
-                        jsx('svg', { key: 'i', width: 14, height: 14, viewBox: '0 0 24 24', fill: 'none', stroke: 'currentColor', strokeWidth: 2, strokeLinecap: 'round', strokeLinejoin: 'round',
-                          children: jsx('path', { d: 'M12 3v12m0 0l-4-4m4 4l4-4M4 19h16' }) }),
-                        jsx('span', { key: 't' }, 'Export ZIP')
-                      ]
-                    })
+                    jsx(BarButton, {
+                      key: 'more',
+                      label: 'More actions',
+                      path: 'M5 10.3a1.7 1.7 0 100 3.4 1.7 1.7 0 000-3.4zm7 0a1.7 1.7 0 100 3.4 1.7 1.7 0 000-3.4zm7 0a1.7 1.7 0 100 3.4 1.7 1.7 0 000-3.4z',
+                      onClick: e => {
+                        e.preventDefault();
+                        const cats = allCategories;
+                        const gesamt = images.reduce((p, c) => p + (c.image?.size || 0) + (c.thumb?.size || 0), 0);
+                        ContextMenu.open(e, ContextMenu.buildMenu([
+                          { label: 'New category', action: () => setShowCategoryInput(s => !s) },
+                          { label: 'Export ZIP', action: () => setShowExportOverlay(true) },
+                          { type: 'separator' },
+                          {
+                            label: 'Open category',
+                            type: 'submenu',
+                            items: [
+                              { label: 'All categories', action: () => setSettings(prev => ({ ...prev, selectedCategory: null })) },
+                              { type: 'separator' },
+                              ...cats.map(cat => ({
+                                label: cat + (groupedByCategory[cat] && groupedByCategory[cat].length
+                                  ? ' (' + groupedByCategory[cat].length + ')' : ' (empty)'),
+                                action: () => setSettings(prev => ({ ...prev, selectedCategory: cat }))
+                              }))
+                            ]
+                          },
+                          { type: 'separator' },
+                          {
+                            label: 'Remove all favorites',
+                            danger: true,
+                            action: () => {
+                              try {
+                                if (!images || !images.some(i => i.favorite)) return UI.showToast('No favorites present.', { type: 'info' });
+                                if (confirm('Remove all favorites?')) {
+                                  setImages(prev => prev.map(i => ({ ...i, favorite: false })));
+                                  UI.showToast('All favorites removed.', { type: 'success' });
+                                }
+                              } catch (err) { console.error(err); UI.showToast('Error removing favorites.', { type: 'error' }); }
+                            }
+                          },
+                          { type: 'separator' },
+                          /* Vorschauen zaehlen mit: Die Zeile soll den Platzbedarf des
+                             Plugins nennen, und seit 3.8.0 liegt neben jedem Original
+                             eine kleine Fassung. Ohne sie waere die Zahl zu niedrig. */
+                          {
+                            label: 'Total storage size: ' + formatNumber(gesamt) + (settings.selectedCategory ? ` (${filteredImages.length} of ${images.length})` : ''),
+                            disabled: true
+                          }
+                        ]));
+                      }
+                    }),
+                    jsx(InPopoutSettings, { key: 'settings', rerender: setImages })
                   ]
                 })
               ]
             }),
-            jsx('div', {
-              role: 'separator',
-              className: constants.separator?.separator,
-              style: { marginRight: '0.75rem' }
-            }),
-            // Kategorie-Leiste
-            jsx('div', {
+            // Zeile zum Zurueckgehen und Loeschen, nur innerhalb einer Kategorie
+            settings.selectedCategory ? jsx('div', {
+              key: 'categoryBar',
               className: 'DynamicBackgrounds-categoryBar',
               children: [
-                // Categories button replaces select: opens context menu with all categories (including empty)
-                /* Hier steht nur noch Zustandsabhaengiges. Leere Kategorien oeffnet man
-                   ueber das Ueberlaufmenue ("Open category"). */
-                settings.selectedCategory ? jsx('button', {
+                jsx('button', {
+                  key: 'back',
                   className: 'DynamicBackgrounds-chip',
                   title: 'Back to the category overview',
-                  onClick: () => setSettings(prev => ({ ...prev, selectedCategory: null })),
-                  children: [jsx('span', { key: 'a' }, '\u2190'), jsx('span', { key: 't' }, 'All categories')]
-                }) : null,
-                settings.selectedCategory && settings.selectedCategory !== FALLBACK_CATEGORY ? jsx('button', {
+                  onClick: () => switchCategory(null),
+                  children: [jsx('span', { key: 'a', 'aria-hidden': true }, '←'), jsx('span', { key: 't' }, 'All categories')]
+                }),
+                settings.selectedCategory !== FALLBACK_CATEGORY ? jsx('button', {
+                  key: 'delete',
                   className: 'DynamicBackgrounds-categoryButton delete',
                   title: 'Delete category',
+                  'aria-label': 'Delete category',
                   onClick: () => handleDeleteCategory(settings.selectedCategory),
                   children: '×'
                 }) : null
               ]
-            }),
+            }) : null,
             showCategoryInput ? jsx('div', {
+              key: 'categoryInput',
               className: 'DynamicBackgrounds-categoryInputRow',
               children: [
                 jsx('input', {
@@ -1211,84 +1827,49 @@ module.exports = meta => {
                 }),
                 jsx('button', {
                   className: 'DynamicBackgrounds-categoryButton',
+                  title: 'Create category',
+                  'aria-label': 'Create category',
                   onClick: handleAddCategory,
                   children: '✓'
                 })
               ]
             }) : null,
-            images.length ? jsx('div', {
-              // Randinformation: klein und gedaempft
-              style: {
-                paddingInline: '0.25rem 0.75rem',
-                display: 'flex',
-                justifyContent: 'space-between',
-                alignItems: 'center',
-                fontSize: '12px',
-                opacity: 0.55
-              },
-              className: constants.textStyles?.['text-sm/normal'],
-              children: [
-                /* Vorschauen zaehlen mit: Die Zeile soll den Platzbedarf des
-                   Plugins nennen, und seit 3.8.0 liegt neben jedem Original
-                   eine kleine Fassung. Ohne sie waere die Zahl zu niedrig. */
-                'Total storage size: ' + formatNumber(images.reduce((p, c) => p + (c.image?.size || 0) + (c.thumb?.size || 0), 0)) + (settings.selectedCategory ? ` (${filteredImages.length} of ${images.length})` : ''),
-                constants.settings.slideshow.enabled && images.length >= 2 ? jsx(IconButton, {
-                  TooltipProps: { text: 'Next background' },
-                  ButtonProps: {
-                    style: { padding: 0, marginRight: 9 },
-                    onClick: onNextShuffle,
-                    className: 'DynamicBackgrounds-nextButton ' + constants.textStyles?.defaultColor,
-                  },
-                  SvgProps: {
-                    width: '18', height: '18',
-                    path: 'M5.7 6.71c-.39.39-.39 1.02 0 1.41L9.58 12 5.7 15.88c-.39.39-.39 1.02 0 1.41.39.39 1.02.39 1.41 0l4.59-4.59c.39-.39.39-1.02 0-1.41L7.12 6.71c-.39-.39-1.03-.39-1.42 0M12.29 6.71c-.39.39-.39 1.02 0 1.41L16.17 12l-3.88 3.88c-.39.39-.39 1.02 0 1.41.39.39 1.02.39 1.41 0l4.59-4.59c.39-.39.39-1.02 0-1.41L13.7 6.7c-.38-.38-1.02-.38-1.41.01'
-                  }
-                }) : null
-              ],
-            }) : null,
                 jsx('div', {
+                  ref: gridRef,
                   className: ['DynamicBackgrounds-gridWrapper', constants.scrollbar?.thin].join(' '),
-                  style: { display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 12, overflowX: 'visible', overflowY: 'auto' },
-                  children: (settings.selectedCategory ? filteredImages.map((e, i) => jsx(ImageComponent, {
+                  children: [emptyView, (settings.selectedCategory ? filteredImages.map((e, i) => jsx(ImageComponent, {
                     key: e.src,
                     item: e,
+                    isCurrent: e.id === currentId,
                     index: i,
                     contextMenuObj,
                     setImages,
                     onSelect: handleSelect,
                     categories: settings.categories,
                     onCategoryChange: handleCategoryChange
-                  })) : allCategories.filter(cat => (groupedByCategory[cat] || []).length > 0).map(cat => {
+                  })) : allCategories.map(cat => {
                       const items = groupedByCategory[cat] || [];
                       const previews = items; // use full group; we'll only display up to 5 at a time
+                      stackLen.current[cat] = items.length;
                       // Enthaelt diese Kategorie das Bild, das gerade laeuft?
                       const hasActive = items.some(i => i.selected);
                       return jsx('div', {
                       key: cat,
-                      className: 'DynamicBackgrounds-categoryStack' + (hasActive ? ' has-active' : ''),
+                      className: 'DynamicBackgrounds-categoryStack' + (hasActive ? ' has-active' : '') + (items.length ? '' : ' is-empty'),
+                      'data-cat': cat,
+                      onMouseMove: stackTilt.onMouseMove,
+                      onMouseLeave: stackTilt.onMouseLeave,
                       role: 'button',
                       tabIndex: 0,
                       'aria-label': `Category ${cat}`,
-                      onKeyDown: (e) => { if (e && (e.key === 'Enter' || e.key === ' ')) { e.preventDefault(); setSettings(prev => ({ ...prev, selectedCategory: cat })); } },
-                        onClick: () => setSettings(prev => ({ ...prev, selectedCategory: cat })),
+                      onKeyDown: (e) => { if (e && (e.key === 'Enter' || e.key === ' ')) { e.preventDefault(); switchCategory(cat); } },
+                        onClick: () => switchCategory(cat),
                         children: [jsx('div', {
                           key: 'stack',
-                          style: { position: 'relative', height: 168, display: 'block' },
-                          onMouseEnter: () => {
-                            // Setzt nur den Offset - die Choreografie ergibt sich aus den
-                            // Slot-Positionen unten und laeuft als eine Transition.
-                            if (stackAnimating[cat]) return;
-                            setStackAnimating(prev => ({ ...prev, [cat]: true }));
-                            setStackOffsets(prev => {
-                              const cur = prev[cat] || 0;
-                              return { ...prev, [cat]: (cur + 1) % Math.max(1, previews.length) };
-                            });
-                            // dient nur noch als Sperre gegen erneutes Ausloesen waehrend der
-                            // Bewegung - die Positionen haengen nicht mehr davon ab
-                            setTimeout(() => {
-                              setStackAnimating(prev => ({ ...prev, [cat]: false }));
-                            }, STACK_ANIM_MS);
-                          },
+                          className: 'DynamicBackgrounds-stackFan',
+                          // Die Choreografie ergibt sich aus den Slot-Positionen unten und
+                          // laeuft als eine Transition.
+                          onMouseEnter: () => rotateStack(cat, 1),
                           children: [(() => {
                             /* Drei Karten statt fuenf; die Rotation macht die Faecherung. */
                             const maxCount = 3;
@@ -1298,7 +1879,8 @@ module.exports = meta => {
                             const m = previews.length;
                             const n = Math.min(m, maxCount);
                             const offset = stackOffsets[cat] || 0;
-                            if (n === 0) return null;
+                            // Leere Kategorie: nur ein gestrichelter Umriss, damit sie sich oeffnen laesst
+                            if (n === 0) return jsx('span', { key: 'ghost', className: 'DynamicBackgrounds-addFace stack' });
 
                             /* SLOT-MODELL
                                Jedes Bild bekommt einen Slot; der Slot allein bestimmt Position,
@@ -1346,7 +1928,10 @@ module.exports = meta => {
                                  deshalb ist die Karte dort einfach verschwunden.
                                Nur waehrend einer laufenden Rotation, sonst wuerde die Animation
                                schon beim ersten Rendern losspielen. */
-                            const rotating = !!stackAnimating[cat];
+                            const rotating = stackAnimating[cat] === true && !prefersReducedMotion();
+                            // Zurueckblaettern: die Karte, die nach vorn kommt, fliegt ueber die
+                            // normale Transition ohne Wartezeit (kein Reise-Keyframe)
+                            const reverse = stackAnimating[cat] === 'back';
                             const windowIsWholeGroup = (m === n);
 
                             const nodes = [];
@@ -1372,14 +1957,12 @@ module.exports = meta => {
                               // Die Reise-Karte startet VORN (400). Wann sie nach hinten
                               // wechselt, steuern die Keyframes - nicht dieser Wert.
                               const z = isTraveling ? 400 : (visible ? slot + 150 : 1);
-                              const shadow = visible
-                                ? '0 10px 26px rgba(0,0,0,0.45)'
-                                : '0 4px 12px rgba(0,0,0,0.3)';
 
                               nodes.push(jsx('img', {
                                 key: p.id,
                                 src: ensureThumbURL(p),
                                 alt: '',
+                                'data-img-id': p.id,
                                 onLoad: e => {
                                   try {
                                     // auf den Zielwert setzen, nicht pauschal auf 1 - sonst
@@ -1388,23 +1971,14 @@ module.exports = meta => {
                                     preloadCache.current.add(p.id);
                                   } catch (err) {}
                                 },
+                                className: 'DynamicBackgrounds-stackCard' + (visible ? '' : ' is-queued'),
                                 style: {
-                                  position: 'absolute',
-                                  left: '50%',
-                                  bottom: '0px',
                                   // Stapelhoehe steckt im transform, nicht in bottom: nur so
                                   // laeuft die gesamte Bewegung ueber eine einzige animierbare
                                   // Eigenschaft. (bottom positiv = hoch, translateY negativ =
                                   // hoch, daher das Minus.)
                                   transform: `translate3d(calc(-50% + ${horizontalOffset}px), ${-baseBottom}px, 0) rotate(${rotation}deg)`,
                                   filter: `brightness(${dim})`,
-                                  width: '190px',
-                                  height: '125px',
-                                  objectFit: 'cover',
-                                  borderRadius: 10,
-                                  boxShadow: shadow,
-                                  // Deutlich sichtbar, sonst verschwimmen aehnliche Bilder zu Streifen
-                                  border: '1px solid rgba(255,255,255,0.13)',
                                   zIndex: z,
                                   opacity: isTraveling ? 1 : (preloadCache.current.has(p.id) ? targetOpacity : 0),
                                   // Keyframe-Koordinaten: Start ist der oberste Slot, Ziel ist
@@ -1420,16 +1994,19 @@ module.exports = meta => {
                                   // Slot zu Slot - aber mit Verzoegerung, damit sie erst
                                   // nachruecken, wenn die oberste Karte angehoben ist.
                                   animation: isTraveling
-                                    ? `DynamicBackgrounds-cardToBack ${STACK_TRAVEL_MS}ms cubic-bezier(0.33,0.02,0.28,1) forwards`
+                                    ? `DynamicBackgrounds-cardToBack ${STACK_TRAVEL_MS}ms linear forwards`
                                     : 'none',
                                   transition: isTraveling
                                     ? 'none'
-                                    : `transform ${STACK_SHIFT_MS}ms cubic-bezier(0.22,0.61,0.36,1) ${STACK_SHIFT_DELAY_MS}ms, opacity ${STACK_SHIFT_MS}ms ease ${STACK_SHIFT_DELAY_MS}ms, box-shadow ${STACK_SHIFT_MS}ms ease ${STACK_SHIFT_DELAY_MS}ms`
+                                    : prefersReducedMotion()
+                                      ? 'none'
+                                      // federnde Kurve: die aufrueckenden Karten schwingen leicht nach
+                                      : `transform ${STACK_SHIFT_MS}ms var(--dbm-ease-spring) ${reverse ? 0 : STACK_SHIFT_DELAY_MS}ms, opacity ${STACK_SHIFT_MS}ms ease ${reverse ? 0 : STACK_SHIFT_DELAY_MS}ms, box-shadow ${STACK_SHIFT_MS}ms ease ${reverse ? 0 : STACK_SHIFT_DELAY_MS}ms`
                                 }
                               }));
                             }
                             return nodes;
-                          })()]
+                          })(), jsx('span', { key: 'badge', className: 'DynamicBackgrounds-stackBadge' }, String(items.length))]
                         }),
                         /* Unter dem Stapel statt darauf: auf beliebigen Motiven waere ein Label
                            mal lesbar, mal nicht. */
@@ -1437,91 +2014,68 @@ module.exports = meta => {
                           key: 'label',
                           className: 'DynamicBackgrounds-categoryLabel',
                           children: [
-                            jsx('span', { key: 'n', className: 'DynamicBackgrounds-categoryName', children: cat }),
-                            jsx('span', { key: 'c', className: 'DynamicBackgrounds-categoryCount', children: String(items.length) })
+                            jsx('span', { key: 'n', className: 'DynamicBackgrounds-categoryName', children: cat })
                           ]
                         })]
                     })
-                  }))
-                })
+                  })), settings.selectedCategory && !filteredImages.length ? null : addTile]
+                }),
+                jsx(DropOverlay, { key: 'drop', active: dragging, category: settings.selectedCategory || FALLBACK_CATEGORY })
           ]
         }),
-        showExportOverlay ? 
+        showExportOverlay ?
         // Export Gallery View
         jsx('div', {
-          style: { 
-            position: 'absolute',
-            top: 0,
-            left: 0,
-            right: 0,
-            bottom: 0,
-            background: '#36393F',
-            zIndex: 100,
-            display: 'grid', 
-            gridTemplateRows: 'auto 1fr',
-            overflow: 'hidden'
-          },
+          className: 'DynamicBackgrounds-exportOverlay',
           children: [
             // Header
             jsx('div', {
-              style: { 
-                display: 'flex', 
-                justifyContent: 'space-between', 
-                alignItems: 'center',
-                padding: '15px 20px',
-                background: '#23272A',
-                borderBottom: '1px solid #444'
-              },
+              className: 'DynamicBackgrounds-exportHead',
               children: [
-                jsx('h2', { style: { margin: 0, color: '#fff', fontSize: '18px' }, children: 'Download images' }),
+                jsx('h2', { className: 'DynamicBackgrounds-exportTitle', children: 'Download images' }),
                 jsx('div', {
+                  className: 'DynamicBackgrounds-exportActions',
                   children: [
                     jsx('button', {
-                      style: { background: '#5865F2', color: '#fff', border: 'none', borderRadius: 4, padding: '8px 16px', cursor: 'pointer', marginRight: '10px', fontSize: '14px' },
+                      className: 'DynamicBackgrounds-exportButton primary',
                       onClick: handleDownloadAllZip,
-                      children: 'All as ZIP'
+                      disabled: zipProgress !== null,
+                      children: zipProgress !== null ? 'Creating ZIP...' : 'All as ZIP'
                     }),
                     jsx('button', {
-                      style: { background: '#23272A', color: '#fff', border: '1px solid #444', borderRadius: 4, padding: '8px 16px', cursor: 'pointer', fontSize: '14px' },
+                      className: 'DynamicBackgrounds-exportButton secondary',
                       onClick: () => setShowExportOverlay(false),
                       children: 'Back'
                     })
                   ]
-                })
+                }),
+                zipProgress !== null ? jsx('div', {
+                  key: 'progress',
+                  className: 'DynamicBackgrounds-exportProgress',
+                  role: 'progressbar',
+                  'aria-valuemin': 0, 'aria-valuemax': 100, 'aria-valuenow': Math.round(zipProgress * 100),
+                  children: jsx('div', { className: 'DynamicBackgrounds-exportProgressFill', style: { transform: 'scaleX(' + zipProgress + ')' } })
+                }) : null
               ]
             }),
             // Image grid
             jsx('div', {
-              style: { 
-                display: 'grid', 
-                gridTemplateColumns: 'repeat(auto-fill, minmax(160px, 1fr))', 
-                gap: '12px', 
-                padding: '20px',
-                overflowY: 'auto'
-              },
+              className: 'DynamicBackgrounds-exportGrid',
               children: filteredImages.map(img => jsx('div', {
                 key: img.id,
-                style: { 
-                  display: 'flex', 
-                  flexDirection: 'column', 
-                  alignItems: 'center', 
-                  background: '#23272A', 
-                  borderRadius: 8, 
-                  padding: 12, 
-                  border: '1px solid #444' 
-                },
+                className: 'DynamicBackgrounds-exportCard',
                 children: [
                   jsx('img', {
                     src: ensureThumbURL(img),
                     alt: img.name,
-                    style: { width: '100%', height: 120, objectFit: 'cover', borderRadius: 4, marginBottom: 8 } 
+                    className: 'DynamicBackgrounds-exportThumb'
                   }),
-                  jsx('span', { 
-                    style: { fontSize: '0.85rem', textAlign: 'center', marginBottom: 8, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: '100%', color: '#fff' }, 
-                    children: img.name || `Image ${img.id}` 
+                  jsx('span', {
+                    className: 'DynamicBackgrounds-exportName',
+                    children: img.name || `Image ${img.id}`
                   }),
                   jsx('button', {
-                    style: { background: '#5865F2', color: '#fff', border: 'none', borderRadius: 4, padding: '6px 12px', cursor: 'pointer', fontSize: '0.85rem', width: '100%' },
+                    className: 'DynamicBackgrounds-exportButton',
                     onClick: () => handleDownloadImage(img),
                     children: 'Download'
                   })
@@ -1534,8 +2088,65 @@ module.exports = meta => {
     })
   }
 
-  function ImageComponent({ item, onSelect, contextMenuObj, setImages, index, categories, onCategoryChange }) {
-    const [loaded, setLoaded] = useState(false);
+  /* FLIP fuer das Nachruecken nach dem Loeschen: merkt die Positionen der
+     Geschwister und spielt die Verschiebung ab, sobald React das Element
+     entfernt hat. Der Beobachter laeuft vor dem naechsten Zeichnen. */
+  function watchReflow(grid, gone) {
+    if (!grid) return;
+    const before = Array.from(grid.children).filter(k => k !== gone).map(k => [k, k.getBoundingClientRect()]);
+    const obs = new MutationObserver(() => {
+      obs.disconnect();
+      try {
+        before.forEach(([k, r0]) => {
+          if (!k.isConnected) return;
+          const r1 = k.getBoundingClientRect();
+          const dx = r0.left - r1.left, dy = r0.top - r1.top;
+          if (!dx && !dy) return;
+          k.animate([{ translate: dx + 'px ' + dy + 'px' }, { translate: '0px 0px' }],
+            { duration: 560, easing: 'cubic-bezier(0.34, 1.56, 0.64, 1)' });
+        });
+      } catch (err) { /* nur Zierde */ }
+    });
+    obs.observe(grid, { childList: true });
+    setTimeout(() => obs.disconnect(), 1500);
+  }
+
+  const FORMAT_NAMES = { webp: 'WebP', jpeg: 'JPEG', jpg: 'JPEG', png: 'PNG', gif: 'GIF', avif: 'AVIF', bmp: 'BMP' };
+  /** Aufloesung, Dateigroesse und Format einer Kachel als Texte fuer die Pillen. */
+  function imagePills(item) {
+    const type = item.image?.type?.split('/').pop();
+    return [
+      item.width && item.height ? item.width + ' x ' + item.height : null,
+      item.image?.size != null ? formatNumber(item.image.size) : null,
+      type ? (FORMAT_NAMES[type] || type) : null
+    ].filter(Boolean);
+  }
+
+  /** Ansicht fuer eine leere Sammlung oder Kategorie, mitten im Raster. */
+  function EmptyState({ title, hint, onAdd }) {
+    return jsx('div', {
+      className: 'DynamicBackgrounds-empty',
+      children: [
+        jsx('div', { key: 'cards', className: 'DynamicBackgrounds-emptyCards', 'aria-hidden': 'true' },
+          jsx('span', { key: 'a' }), jsx('span', { key: 'b' }), jsx('span', { key: 'c' })),
+        jsx('div', { key: 'title', className: 'DynamicBackgrounds-emptyTitle' }, title),
+        jsx('div', { key: 'hint', className: 'DynamicBackgrounds-emptyHint' }, hint),
+        jsx('button', {
+          key: 'add', type: 'button', className: 'DynamicBackgrounds-emptyButton', onClick: onAdd,
+          children: [
+            jsx('svg', { key: 'i', width: 18, height: 18, viewBox: '0 0 24 24', fill: 'currentColor', 'aria-hidden': 'true' }, jsx('path', { d: BAR_ICONS.plus })),
+            jsx('span', { key: 't' }, 'Add images')
+          ]
+        })
+      ]
+    });
+  }
+
+  function ImageComponent({ item, isCurrent, onSelect, contextMenuObj, setImages, index, categories, onCategoryChange }) {
+    // Mit Vorschau gibt es sofort etwas zu zeigen; so fliegt beim Oeffnen einer
+    // Kategorie kein Platzhalter. Das Einblenden bleibt den spaet geladenen.
+    const hasThumb = !!(item._thumbObjectURL || item.thumb instanceof Blob);
+    const [loaded, setLoaded] = useState(hasThumb);
     const [error, setError] = useState(false);
     const [isDragging, setIsDragging] = useState(false);
     const [isDragOver, setIsDragOver] = useState(false);
@@ -1568,16 +2179,84 @@ module.exports = meta => {
       previewTimer.current && clearTimeout(previewTimer.current);
       viewTransition.endPreview?.();
     }, []);
-    const handleDelete = useCallback(e => {
-      e.stopPropagation();
+    const [confirming, setConfirming] = useState(false);
+    // Die eigentliche Loeschlogik, unveraendert; die Animation drumherum ist Zierde.
+    const performDelete = useCallback(() => {
       clearObjectURL(item);
       setImages(prev => prev.filter(e => e.id !== item.id).map((e, i) => { e.id = i + 1; return e; }));
       item.selected && viewTransition.removeImage();
     }, [setImages, item.id, item.selected, item.src]);
+    // Der Knopf oeffnet nur die Rueckfrage an der Kachel.
+    const handleDelete = useCallback(e => {
+      e.stopPropagation();
+      setConfirming(true);
+    }, []);
+    /* Bestaetigt: Kachel kippt weg und faellt, dann loeschen; die uebrigen
+       Kacheln rutschen per FLIP federnd nach. Die Positionen werden vor dem
+       Loeschen gemerkt und im Moment des DOM-Umbaus (MutationObserver, noch
+       vor dem Zeichnen) abgespielt. Scheitert die Animation, wird trotzdem
+       geloescht; ein Notfall-Timer deckt den Fall ab, dass onfinish ausbleibt. */
+    const handleConfirmDelete = useCallback(e => {
+      e.stopPropagation();
+      setConfirming(false);
+      const el = wrapperRef.current;
+      let done = false;
+      const finish = () => {
+        if (done) return;
+        done = true;
+        try { watchReflow(el.parentElement, el); } catch (err) { /* nur Zierde */ }
+        performDelete();
+      };
+      if (!el || prefersReducedMotion()) return finish();
+      try {
+        el.style.pointerEvents = 'none';
+        const anim = el.animate([
+          { transform: 'rotate(0deg) translateY(0px)', opacity: 1, offset: 0 },
+          { transform: 'rotate(-9deg) translateY(-8px)', opacity: 1, offset: 0.22, easing: 'cubic-bezier(0.55, 0, 0.9, 0.5)' },
+          { transform: 'rotate(26deg) translateY(280px) scale(0.85)', opacity: 0, offset: 1 }
+        ], { duration: 620, easing: 'ease-out', fill: 'forwards' });
+        anim.onfinish = finish;
+        setTimeout(finish, 900);
+      } catch (err) { finish(); }
+    }, [performDelete]);
     const handleToggleFavorite = useCallback(e => {
       e.stopPropagation();
+      const willBe = !item.favorite;
       setImages(prev => prev.map(img => img.id === item.id ? { ...img, favorite: !img.favorite } : img));
-    }, [setImages, item.id]);
+      // Nach dem Rendern: das Herz ploppt auf (Setzen) oder zieht sich zusammen (Entfernen)
+      if (prefersReducedMotion()) return;
+      setTimeout(() => {
+        try {
+          const btn = wrapperRef.current?.querySelector('.DynamicBackgrounds-favoriteButton');
+          const svg = btn?.querySelector('svg');
+          if (!svg) return;
+          svg.animate(willBe
+            ? [{ transform: 'scale(0.4)' }, { transform: 'scale(1.55)', offset: 0.45 }, { transform: 'scale(0.92)', offset: 0.75 }, { transform: 'scale(1)' }]
+            : [{ transform: 'scale(1)' }, { transform: 'scale(0.7)', offset: 0.5 }, { transform: 'scale(1)' }],
+            { duration: willBe ? 480 : 220, easing: 'ease-out' });
+          if (willBe) heartConfetti(btn, 8 + Math.floor(Math.random() * 5));
+        } catch (err) { /* nur Zierde */ }
+      }, 0);
+    }, [setImages, item.id, item.favorite]);
+
+    // Rueckfrage: Esc und Klick daneben brechen ab (Esc wird abgefangen, damit der Manager offen bleibt)
+    useEffect(() => {
+      if (!confirming) return;
+      const onKey = ev => { if (ev.key === 'Escape') { ev.stopPropagation(); ev.preventDefault(); setConfirming(false); wrapperRef.current?.focus(); } };
+      const onDown = ev => { if (!wrapperRef.current?.contains(ev.target)) setConfirming(false); };
+      document.addEventListener('keydown', onKey, true);
+      document.addEventListener('mousedown', onDown, true);
+      return () => {
+        document.removeEventListener('keydown', onKey, true);
+        document.removeEventListener('mousedown', onDown, true);
+      };
+    }, [confirming]);
+    useEffect(() => {
+      if (confirming) wrapperRef.current?.querySelector('.DynamicBackgrounds-confirmCancel')?.focus();
+    }, [confirming]);
+    const handleKeyDown = useCallback(e => {
+      if (e.target === e.currentTarget && e.key === 'Enter') { e.preventDefault(); handleImageClick(); }
+    }, [handleImageClick]);
     const handleContextMenu = useCallback(e => {
       const ImageContextMenu = ContextMenu.buildMenu([
         contextMenuObj.lazyCarousel ? {
@@ -1687,46 +2366,54 @@ module.exports = meta => {
     return jsx(constants.nativeUI.FocusRing, null,
       jsx('div', {
         ref: wrapperRef,
-        className: 'DynamicBackgrounds-imageWrapper' + (item.selected ? ' selected' : '') + (isDragging ? ' dragging' : '') + (isDragOver ? ' drag-over' : ''),
-        onClick: handleImageClick,
+        className: 'DynamicBackgrounds-imageWrapper' + (isCurrent ? ' selected' : '') + (confirming ? ' confirming' : '') + (isDragging ? ' dragging' : '') + (isDragOver ? ' drag-over' : ''),
+        'data-img-id': item.id,
+        role: 'button',
+        tabIndex: 0,
+        'aria-label': 'Use image ' + item.id + (isCurrent ? ' (current background)' : ''),
+        onKeyDown: handleKeyDown,
+        onClick: confirming ? undefined : handleImageClick,
         onMouseEnter: handlePreviewEnter,
-        onMouseLeave: handlePreviewLeave,
+        onMouseLeave: e => { handlePreviewLeave(); tileTilt.onMouseLeave(e); },
+        onMouseMove: tileTilt.onMouseMove,
         onContextMenu: handleContextMenu,
-        draggable: "true",
+        draggable: confirming ? "false" : "true",
         onDragStart: handleDragStart,
         onDragEnd: handleDragEnd,
         onDragOver: handleDragOver,
         onDragLeave: handleDragLeave,
         onDrop: handleDrop,
         children: [
-            !loaded ? jsx(constants.nativeUI.Spinner) : error ? jsx('div', { className: constants.textStyles?.defaultColor }, 'Image could not be loaded') : jsx('img', {
+            !loaded ? jsx('div', { className: 'DynamicBackgrounds-imageSkeleton', 'aria-hidden': 'true' }) : error ? jsx('div', { className: 'DynamicBackgrounds-imageError' },
+              jsx('svg', { width: 28, height: 28, viewBox: '0 0 24 24', fill: 'currentColor', 'aria-hidden': 'true' }, jsx('path', { d: 'M21 5v6.59l-3-3.01-4 4.01-4-4-4 4-3-3.01V5c0-1.1.9-2 2-2h14c1.1 0 2 .9 2 2zm-3 6.42 3 3.01V19c0 1.1-.9 2-2 2H5c-1.1 0-2-.9-2-2v-6.58l3 2.99 4-4 4 4 4-3.99z' })),
+              jsx('span', null, 'Could not load image')) : jsx('img', {
             tabIndex: '-1',
             src: ensureThumbURL(item) || '',
-            className: 'DynamicBackgrounds-image',
+            className: 'DynamicBackgrounds-image' + (hasThumb ? '' : ' late'),
           }), !error ? jsx(Fragment, {
             children: [
               jsx('div', {
                 className: 'DynamicBackgrounds-imageData',
-                'data-size': formatNumber(item.image.size),
-                'data-dimensions': item.width && item.height ? item.width + ' x ' + item.height : null,
-                'data-mime': item.image.type?.split('/').pop().toUpperCase() || null,
+                children: imagePills(item).map(text => jsx('span', { key: text }, text))
               })
             ]
           }) : null, jsx(IconButton, {
             TooltipProps: { text: item.favorite ? 'Remove favorite' : 'Mark as favorite' },
             ButtonProps: {
+              'aria-label': item.favorite ? 'Remove favorite' : 'Mark as favorite',
               onClick: handleToggleFavorite,
               className: 'DynamicBackgrounds-favoriteButton' + (item.favorite ? ' active' : ''),
             },
             SvgProps: {
               width: '16', height: '16',
-              path: item.favorite 
-                ? "M12 17.27L18.18 21l-1.64-7.03L22 9.24l-7.19-.61L12 2 9.19 8.63 2 9.24l5.46 4.73L5.82 21 12 17.27 18.18 21l-1.63-7.03L22 9.24zM12 15.4l-3.76 2.27 1-4.28-3.32-2.88 4.38-.38L12 6.1l1.71 4.04 4.38.38-3.32 2.88 1 4.28L12 15.4z"
-                : "M22 9.24l-7.19-.62L12 2 9.19 8.63 2 9.24l5.46 4.73L5.82 21 12 17.27 18.18 21l-1.63-7.03L22 9.24zM12 15.4l-3.76 2.27 1-4.28-3.32-2.88 4.38-.38L12 6.1l1.71 4.04 4.38.38-3.32 2.88 1 4.28L12 15.4z"
+              path: item.favorite
+                ? "M12 21.35l-1.45-1.32C5.4 15.36 2 12.28 2 8.5 2 5.42 4.42 3 7.5 3c1.74 0 3.41.81 4.5 2.09C13.09 3.81 14.76 3 16.5 3 19.58 3 22 5.42 22 8.5c0 3.78-3.4 6.86-8.55 11.54L12 21.35z"
+                : "M16.5 3c-1.74 0-3.41.81-4.5 2.09C10.91 3.81 9.24 3 7.5 3 4.42 3 2 5.42 2 8.5c0 3.78 3.4 6.86 8.55 11.54L12 21.35l1.45-1.32C18.6 15.36 22 12.28 22 8.5 22 5.42 19.58 3 16.5 3zm-4.4 15.55l-.1.1-.1-.1C7.14 14.24 4 11.39 4 8.5 4 6.5 5.5 5 7.5 5c1.54 0 3.04.99 3.57 2.36h1.87C13.46 5.99 14.96 5 16.5 5c2 0 3.5 1.5 3.5 3.5 0 2.89-3.14 5.74-7.9 10.05z"
             }
           }), jsx(IconButton, {
             TooltipProps: { text: 'Delete image' },
             ButtonProps: {
+              'aria-label': 'Delete image',
               onClick: handleDelete,
               className: 'DynamicBackgrounds-deleteButton',
             },
@@ -1734,15 +2421,29 @@ module.exports = meta => {
               width: '16', height: '16',
               path: "M19 6.41 17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"
             }
-          })
+          }), isCurrent ? jsx('span', { key: 'now', className: 'DynamicBackgrounds-nowBadge' }, 'Now') : null,
+          confirming ? jsx('div', {
+            key: 'confirm',
+            className: 'DynamicBackgrounds-confirm',
+            role: 'alertdialog',
+            'aria-label': 'Delete this image?',
+            onClick: e => e.stopPropagation(),
+            children: [
+              jsx('span', { key: 't', className: 'DynamicBackgrounds-confirmText' }, 'Delete this image?'),
+              jsx('div', { key: 'b', className: 'DynamicBackgrounds-confirmButtons', children: [
+                jsx('button', { key: 'd', className: 'DynamicBackgrounds-confirmDelete', onClick: handleConfirmDelete }, 'Delete'),
+                jsx('button', { key: 'c', className: 'DynamicBackgrounds-confirmCancel', onClick: e => { e.stopPropagation(); setConfirming(false); } }, 'Cancel')
+              ] })
+            ]
+          }) : null
         ]
       })
     )
   }
 
-  function InputComponent({ setImages, currentCategory }) {
+  /** Die Upload-Wege des Managers: Dateiauswahl, Ablegen und Einfuegen. Die Ablageflaeche ist entfallen, die Logik ist dieselbe. */
+  function useUploader(setImages, currentCategory) {
     const [processing, setProcessing] = useState([]);
-    const dropArea = useRef(null);
 
     const handleFileTransfer = useCallback(async (blob) => {
       // Optimize newly uploaded images before creating object URL
@@ -1780,25 +2481,9 @@ module.exports = meta => {
           handleFileTransfer(new Blob([file.data], { type: getImageType(file.data) }));
         });
       }).catch(e => { console.error(e); UI.showToast('Image could not be uploaded. ' + e, { type: 'error' }) });
-    }, [setImages]);
-    const handleInput = useCallback(e => {
-      e.preventDefault?.();
-      e.target.textContent = '';
-    }, []);
-    const handleDragEnter = useCallback(() => {
-      dropArea.current.classList.add('dragging');
-    }, [dropArea.current]);
-    const handleDragOver = useCallback(e => {
-      e.preventDefault?.();
-      e.stopPropagation?.();
-      e.dataTransfer.dropEffect = 'copy';
-    }, []);
-    const handleDragEnd = useCallback(() => {
-      dropArea.current.classList.remove('dragging');
-    }, [dropArea.current]);
+    }, [setImages, handleFileTransfer]);
     const handleDrop = useCallback(e => {
       const timeStamp = Date.now();
-      handleDragEnd();
       if (e.dataTransfer?.files?.length) {
         setProcessing(prev => [...prev, timeStamp]);
         for (const droppedFile of e.dataTransfer.files) {
@@ -1820,7 +2505,7 @@ module.exports = meta => {
           setProcessing(prev => prev.filter(t => t !== timeStamp));
         });
       }
-    }, [handleFileTransfer, handleDragEnd, setProcessing]);
+    }, [handleFileTransfer, setProcessing]);
     const handlePaste = useCallback(e => {
       e.preventDefault?.();
       const timeStamp = Date.now();
@@ -1835,49 +2520,162 @@ module.exports = meta => {
       }
       setProcessing(prev => prev.filter(t => t !== timeStamp));
     }, [handleFileTransfer, setProcessing]);
-    const handleRemove = useCallback(() => {
-      setImages(prev => {
-        prev.forEach(e => {
-          e.selected = false;
-        });
-        viewTransition.removeImage();
-        return [...prev];
-      });
-    }, [setImages]);
 
-    useEffect(() => { dropArea.current.focus() }, []);
+    return { processing, handleUpload, handleDrop, handlePaste };
+  }
 
-    return jsx('div', {
-      className: 'DynamicBackgrounds-inputWrapper',
+  const BAR_ICONS = {
+    plus: 'M19 13h-6v6h-2v-6H5v-2h6V5h2v6h6z',
+    addImage: 'M19 7v2.99s-1.99.01-2 0V7h-3s.01-1.99 0-2h3V2h2v3h3v2zm-3 4V8h-3V5H5c-1.1 0-2 .9-2 2v12c0 1.1.9 2 2 2h12c1.1 0 2-.9 2-2v-8zM5 19l3-4 2 3 3-4 4 5z',
+    folder: 'M10 4H2v16h20V6H12l-2-2z',
+    chevron: 'M7 10l5 5 5-5z',
+    check: 'M9 16.2 4.8 12l-1.4 1.4L9 19 21 7l-1.4-1.4z',
+    star: 'M12 17.27L18.18 21l-1.64-7.03L22 9.24l-7.19-.61L12 2 9.19 8.63 2 9.24l5.46 4.73L5.82 21z',
+    gear: 'M19.14 12.94c.04-.3.06-.61.06-.94 0-.32-.02-.64-.07-.94l2.03-1.58c.18-.14.23-.41.12-.61l-1.92-3.32c-.12-.22-.37-.29-.59-.22l-2.39.96c-.5-.38-1.03-.7-1.62-.94l-.36-2.54c-.04-.24-.24-.41-.48-.41h-3.84c-.24 0-.43.17-.47.41l-.36 2.54c-.59.24-1.13.57-1.62.94l-2.39-.96c-.22-.08-.47 0-.59.22L2.74 8.87c-.12.21-.08.47.12.61l2.03 1.58c-.05.3-.09.63-.09.94s.02.64.07.94l-2.03 1.58c-.18.14-.23.41-.12.61l1.92 3.32c.12.22.37.29.59.22l2.39-.96c.5.38 1.03.7 1.62.94l.36 2.54c.05.24.24.41.48.41h3.84c.24 0 .44-.17.47-.41l.36-2.54c.59-.24 1.13-.56 1.62-.94l2.39.96c.22.08.47 0 .59-.22l1.92-3.32c.12-.22.07-.47-.12-.61zM12 15.6c-1.98 0-3.6-1.62-3.6-3.6s1.62-3.6 3.6-3.6 3.6 1.62 3.6 3.6-1.62 3.6-3.6 3.6'
+  };
+
+  /** Abdeckung beim Ziehen von Dateien. Die Rahmenanimation laeuft nur, solange sie sichtbar ist. */
+  function DropOverlay({ active, category }) {
+    return jsx('div', { className: 'DynamicBackgrounds-dropOverlay' + (active ? ' on' : ''), 'aria-hidden': 'true' }, [
+      jsx('svg', { key: 'frame', className: 'DynamicBackgrounds-dropFrame' },
+        jsx('rect', { x: 1.5, y: 1.5, rx: 22, ry: 22 })),
+      jsx('div', { key: 'msg', className: 'DynamicBackgrounds-dropMsg' }, [
+        jsx('svg', { key: 'plus', className: 'DynamicBackgrounds-dropPlus', width: 64, height: 64, viewBox: '0 0 24 24', fill: 'currentColor' },
+          jsx('path', { d: BAR_ICONS.plus })),
+        jsx('div', { key: 't', className: 'DynamicBackgrounds-dropText' }, 'Drop to add to ' + category)
+      ])
+    ]);
+  }
+
+  /** Runder Symbolknopf der Werkzeugleiste. Das title-Attribut wird dort unterdrueckt, deshalb Discords Tooltip. */
+  function BarButton({ label, tooltip, path, className, ...rest }) {
+    return jsx(constants.nativeUI.Tooltip, {
+      spacing: 8,
+      position: 'bottom',
+      color: 'primary',
+      hideOnClick: true,
+      text: tooltip || label,
+      children: ({ onContextMenu, ...tip }) => jsx('button', {
+        ...tip,
+        ...rest,
+        type: 'button',
+        'aria-label': label,
+        className: 'DynamicBackgrounds-barBtn' + (className ? ' ' + className : ''),
+        children: jsx('svg', { width: 20, height: 20, viewBox: '0 0 24 24', fill: 'currentColor', 'aria-hidden': 'true',
+          children: jsx('path', { d: path }) })
+      })
+    });
+  }
+
+  /** Umschalter mit zwei Segmenten. Der Daumen gleitet zum gewaehlten Segment. */
+  function SegmentSwitch({ label, value, onChange, options }) {
+    const pos = options.findIndex(o => o.value === value);
+    return jsx('div', { className: 'DynamicBackgrounds-seg', role: 'radiogroup', 'aria-label': label, 'data-pos': Math.max(0, pos) }, [
+      jsx('span', { key: 'thumb', className: 'DynamicBackgrounds-segThumb', 'aria-hidden': 'true' }),
+      ...options.map(o => jsx(constants.nativeUI.Tooltip, {
+        key: String(o.value),
+        spacing: 8, position: 'bottom', color: 'primary', hideOnClick: true,
+        text: o.tooltip,
+        children: ({ onContextMenu, ...tip }) => jsx('button', {
+          ...tip,
+          type: 'button',
+          role: 'radio',
+          'aria-checked': o.value === value,
+          className: 'DynamicBackgrounds-segBtn' + (o.value === value ? ' on' : ''),
+          onClick: () => o.value !== value && onChange(o.value),
+          children: [
+            o.icon ? jsx('svg', { key: 'i', width: 14, height: 14, viewBox: '0 0 24 24', fill: 'currentColor', 'aria-hidden': 'true', children: jsx('path', { d: o.icon }) }) : null,
+            jsx('span', { key: 't' }, o.label)
+          ]
+        })
+      }))
+    ]);
+  }
+
+  /** Auswahl der Diashow-Kategorien: Feld in der Werkzeugleiste, darunter die Liste. */
+  function CategoryQuickButton({ categories, value, onChange }) {
+    const [open, setOpen] = useState(false);
+    const btnRef = useRef();
+    // value may be array (new) or string (legacy)
+    const selected = Array.isArray(value) ? value : (value ? [value] : []);
+    // Schliesse Dropdown bei Klick ausserhalb
+    useEffect(() => {
+      if (!open) return;
+      function handle(e) {
+        if (!btnRef.current?.parentElement.contains(e.target)) setOpen(false);
+      }
+      document.addEventListener('mousedown', handle);
+      return () => document.removeEventListener('mousedown', handle);
+    }, [open]);
+    const labelText = selected.length === 1 ? selected[0] : (selected.length ? selected.length + ' categories' : 'All categories');
+    const item = (key, text, on, onClick) => jsx('div', {
+      key,
+      role: 'option',
+      'aria-selected': on,
+      tabIndex: 0,
+      className: 'DynamicBackgrounds-quickMenuItem' + (on ? ' on' : ''),
+      onClick,
+      onKeyDown: e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onClick(); } },
       children: [
-        jsx(constants.nativeUI.FocusRing, null, jsx('div', {
-          className: 'DynamicBackgrounds-DropAndPasteArea',
-          role: 'button',
-          tabIndex: 0,
-          contentEditable: 'true',
-          ref: dropArea,
-          onClick: handleUpload,
-          onKeyDown: (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); handleUpload(); } },
-          onInput: handleInput,
-          onDrop: handleDrop,
-          onPaste: handlePaste,
-          onDragOver: handleDragOver,
-          onDragEnter: handleDragEnter,
-          onDragEnd: handleDragEnd,
-          onDragLeave: handleDragEnd,
-          children: processing.length ? jsx(constants.nativeUI.Spinner) : null
-        })),
-        // settings moved to quick-button row
+        jsx('span', { key: 't', className: 'DynamicBackgrounds-quickMenuText' }, text),
+        jsx('svg', { key: 'c', className: 'DynamicBackgrounds-quickCheck', width: 16, height: 16, viewBox: '0 0 24 24', fill: 'currentColor', 'aria-hidden': 'true', children: jsx('path', { d: BAR_ICONS.check }) })
       ]
-    })
+    });
+    return jsx('div', { className: 'DynamicBackgrounds-quickWrap' }, [
+      jsx(constants.nativeUI.Tooltip, {
+        key: 'field',
+        spacing: 8, position: 'bottom', color: 'primary', hideOnClick: true,
+        text: selected.length ? `Slideshow categories: ${selected.join(', ')}` : 'Choose which categories the slideshow uses',
+        children: ({ onContextMenu, ...tip }) => jsx('button', {
+          ...tip,
+          ref: btnRef,
+          type: 'button',
+          'aria-haspopup': 'listbox',
+          'aria-expanded': open,
+          className: 'DynamicBackgrounds-field' + (open ? ' open' : '') + (selected.length ? ' filtered' : ''),
+          onClick: () => setOpen(o => !o),
+          children: [
+            jsx('svg', { key: 'i', className: 'DynamicBackgrounds-fieldIcon', width: 18, height: 18, viewBox: '0 0 24 24', fill: 'currentColor', 'aria-hidden': 'true', children: jsx('path', { d: BAR_ICONS.folder }) }),
+            jsx('span', { key: 't', className: 'DynamicBackgrounds-fieldText' }, labelText),
+            jsx('svg', { key: 'v', className: 'DynamicBackgrounds-fieldArrow', width: 18, height: 18, viewBox: '0 0 24 24', fill: 'currentColor', 'aria-hidden': 'true', children: jsx('path', { d: BAR_ICONS.chevron }) })
+          ]
+        })
+      }),
+      open && jsx('div', {
+        key: 'menu',
+        role: 'listbox',
+        className: 'DynamicBackgrounds-quickMenu',
+        children: [
+          item('all', 'All categories', selected.length === 0, () => { onChange([]); setOpen(false); }),
+          ...categories.map(cat => item(cat, cat, selected.includes(cat), () => {
+            const next = selected.includes(cat) ? selected.filter(c => c !== cat) : [...selected, cat];
+            onChange(next);
+            setOpen(false);
+          }))
+        ]
+      })
+    ]);
   }
 
   function PopoutComponent() {
     const [open, setOpen] = useState(false);
     const targetElementRef = useRef(null);
+    /* Schliessen zieht das Fenster erst zum Knopf zurueck und nimmt es danach aus
+       dem DOM. Die Klasse "closing" startet die Rueckbewegung; jeder Weg zum
+       Schliessen (Knopf, Esc, Klick nach aussen) laeuft hierueber, ein zweiter
+       Aufruf waehrend der Bewegung wird verschluckt. */
+    const closing = useRef(0);
+    const requestClose = useCallback(() => {
+      if (closing.current) return;
+      const wrap = document.querySelector('.DynamicBackgrounds-popoutWrap');
+      if (!wrap || prefersReducedMotion()) { setOpen(false); return; }
+      wrap.classList.add('closing');
+      closing.current = setTimeout(() => { closing.current = 0; setOpen(false); }, 200);
+    }, []);
+    useEffect(() => () => clearTimeout(closing.current), []);
     const handleClick = useCallback(() => {
-      setOpen(op => !op);
-    }, [setOpen]);
+      open ? requestClose() : setOpen(true);
+    }, [open, requestClose]);
 
     return jsx(constants.nativeUI.Popout, {
       shouldShow: open,
@@ -1887,7 +2685,7 @@ module.exports = meta => {
       autoInvert: false,
       spacing: 8,
       targetElementRef,
-      renderPopout: () => jsx(ManagerComponent, { onRequestClose: () => setOpen(false) }),
+      renderPopout: () => jsx(ManagerComponent, { onRequestClose: requestClose }),
       children: (e, t) => {
         return jsx(IconComponent, {
           ...e,
@@ -1938,7 +2736,9 @@ module.exports = meta => {
   function BuildSettings() {
     const [setting, setSetting] = useSettings();
 
-    return jsx(Fragment, {
+    // Eigene Wurzel, damit die --dbm-Variablen auch ausserhalb des Managers gelten
+    return jsx('div', {
+      className: 'DynamicBackgrounds-settings',
       children: [
         jsx(constants.nativeUI.FormTitle, { children: 'Transitions' }),
         jsx(FormSwitch, {
@@ -2002,7 +2802,7 @@ module.exports = meta => {
             setSetting(prev => ({ ...prev, slideshow: { ...prev.slideshow, enabled: newVal } }));
             newVal ? slideShowManager.start() : slideShowManager.stop();
           },
-        }, 'Diashow aktivieren'),
+        }, 'Enable slideshow'),
         jsx(FormNumberInput, {
           disabled: !setting.slideshow.enabled,
           min: 1,
@@ -2023,11 +2823,11 @@ module.exports = meta => {
         // Favoriten-Filter Quick-Button kommt in die Toolbar
         // Multi-category filter: toggle which categories the slideshow should use
         jsx('div', {
-          style: { marginBottom: '0.75rem' },
+          className: 'DynamicBackgrounds-filterGroup',
           children: [
-            jsx('div', { className: constants.textStyles?.defaultColor, style: { marginBottom: 6 }, children: 'Category filter' }),
+            jsx('div', { className: [constants.textStyles?.defaultColor, 'DynamicBackgrounds-filterLabel'].join(' '), children: 'Category filter' }),
             jsx('div', {
-              style: { display: 'flex', gap: 8, flexWrap: 'wrap' },
+              className: 'DynamicBackgrounds-filterChips',
               children: [
                 jsx('button', {
                   key: 'all-categories-filter',
@@ -2035,7 +2835,7 @@ module.exports = meta => {
                     setSetting(prev => ({ ...prev, slideshow: { ...prev.slideshow, categoryFilters: [], categoryFilter: null } }));
                     if (setting.slideshow.enabled) slideShowManager.start();
                   },
-                  style: { padding: '6px 10px', borderRadius: 6, background: (!setting.slideshow?.categoryFilters || setting.slideshow.categoryFilters.length === 0) ? 'var(--background-modifier-selected)' : 'transparent', color: (!setting.slideshow?.categoryFilters || setting.slideshow.categoryFilters.length === 0) ? '#fff' : 'var(--text-normal)', border: 'none', cursor: 'pointer' },
+                  className: 'DynamicBackgrounds-filterChip' + (!setting.slideshow?.categoryFilters || setting.slideshow.categoryFilters.length === 0 ? ' active' : ''),
                   children: 'All categories'
                 }),
                 ...setting.categories.map(cat => jsx('button', {
@@ -2049,14 +2849,14 @@ module.exports = meta => {
                     });
                     if (setting.slideshow.enabled) slideShowManager.start();
                   },
-                  style: { padding: '6px 10px', borderRadius: 6, background: (Array.isArray(setting.slideshow?.categoryFilters) && setting.slideshow.categoryFilters.includes(cat)) ? 'var(--background-modifier-selected)' : 'transparent', color: (Array.isArray(setting.slideshow?.categoryFilters) && setting.slideshow.categoryFilters.includes(cat)) ? '#fff' : 'var(--text-normal)', border: 'none', cursor: 'pointer' },
+                  className: 'DynamicBackgrounds-filterChip' + (Array.isArray(setting.slideshow?.categoryFilters) && setting.slideshow.categoryFilters.includes(cat) ? ' active' : ''),
                   children: cat
                 }))
               ]
             })
           ]
         }),
-        jsx('div', { role: 'separator', className: constants.separator?.separator, style: { marginBottom: "1rem" } }),
+        jsx('div', { role: 'separator', className: [constants.separator?.separator, 'DynamicBackgrounds-settingsSeparator'].join(' ') }),
         jsx(FormSwitch, {
           value: setting.enableDrop,
           note: "When enabled, the popup is moved in front of Discord's native drop area, allowing images to be dragged and dropped.",
@@ -2077,9 +2877,8 @@ module.exports = meta => {
             newVal ? contextMenuPatcher.patch() : contextMenuPatcher.unpatch();
           },
         }, 'Add context menu entry on images'),
-        jsx('div', { role: 'separator', className: constants.separator?.separator, style: { marginBottom: "1rem" } }),
-        jsx(constants.nativeUI.Button, {
-          style: { marginLeft: "auto" },
+        jsx('div', { role: 'separator', className: [constants.separator?.separator, 'DynamicBackgrounds-settingsSeparator'].join(' ') }),
+        jsx('div', { className: 'DynamicBackgrounds-settingsFooter' }, jsx(constants.nativeUI.Button, {
           color: constants.nativeUI.Button?.Colors?.RED || 'red',
           onClick: () => {
             UI.showConfirmationModal(
@@ -2099,7 +2898,7 @@ module.exports = meta => {
               }
             );
           }
-        }, "Delete Database")
+        }, "Delete Database"))
       ]
     })
   }
@@ -2115,8 +2914,7 @@ module.exports = meta => {
           ]
         }),
         note && jsx("span", {
-          className: constants.textStyles?.["text-sm/normal"],
-          style: { color: "var(--text-secondary)" },
+          className: [constants.textStyles?.["text-sm/normal"], 'DynamicBackgrounds-FormNote'].join(' '),
         }, note)
       ]
     })
@@ -2182,8 +2980,8 @@ module.exports = meta => {
     const TextInputComponent = constants.nativeUI.TextInput || (({value, onChange, inputRef, rows, ...props}) => jsx('input', {
       ref: inputRef,
       value, onChange: e => onChange(e.target.value),
-      style: { background: '#1e1f22', color: '#fff', border: '1px solid #4e5058', borderRadius: 4, padding: '2px 6px', boxSizing: 'border-box' },
-      ...props
+      ...props,
+      className: [props.className, 'DynamicBackgrounds-fallbackInput'].join(' ')
     }));
 
     return jsx('label', {
@@ -2318,25 +3116,21 @@ module.exports = meta => {
     const TextInputComponent = constants.nativeUI.TextInput || (({value, onChange, inputRef, rows, ...props}) => jsx('input', {
       ref: inputRef,
       value, onChange: e => onChange(e.target.value),
-      style: { background: '#1e1f22', color: '#fff', border: '1px solid #4e5058', borderRadius: 4, padding: '2px 6px', width: '4rem', textAlign: 'right', fontSize: '14px', boxSizing: 'border-box' },
-      ...props
+      ...props,
+      className: [props.className, 'DynamicBackgrounds-fallbackInput compact'].join(' ')
     }));
     const MenuSliderControlComponent = constants.nativeUI.MenuSliderControl || (({ initialValue, onValueChange, asValueChanges, minValue, maxValue, disabled, ...props }) => jsx('input', {
       type: 'range', min: minValue, max: maxValue, defaultValue: initialValue, disabled,
       onChange: e => { const v = Number(e.target.value); asValueChanges?.(v); onValueChange?.(v); },
-      style: { width: '100%' },
-      ...props
+      ...props,
+      className: [props.className, 'DynamicBackgrounds-fallbackSlider'].join(' ')
     }));
 
     return jsx('div', {
-      style: {
-        display: 'grid', gap: "0.5rem", maxWidth: '16rem'
-      },
-      className: [constants.separator?.item, constants.separator?.labelContainer, (restProps.disabled ? constants.separator?.disabled : '')].join(' '),
+      className: [constants.separator?.item, constants.separator?.labelContainer, (restProps.disabled ? constants.separator?.disabled : ''), 'DynamicBackgrounds-menuRow'].join(' '),
       children: [
         jsx('div', {
-          className: constants.textStyles?.defaultColor,
-          style: { display: 'flex', gap: '0.25rem', alignItems: 'center' },
+          className: [constants.textStyles?.defaultColor, 'DynamicBackgrounds-menuRowHead'].join(' '),
           // Fokus gehoert an den Klick, nicht an den Mauszeiger
           onMouseDown: e => e.stopPropagation?.(),
           onClick: e => e.stopPropagation?.(),
@@ -2344,12 +3138,7 @@ module.exports = meta => {
             jsx('label', {
               htmlFor: ID,
               children: restProps.label,
-              style: {
-                marginRight: 'auto', paddingRight: '0.75rem',
-                cursor: 'inherit',
-                flex: '1 0 calc(55% - .5rem)'
-              },
-              className: [constants.separator?.label].join(' '),
+              className: [constants.separator?.label, 'DynamicBackgrounds-menuRowLabel'].join(' '),
             }),
             /* Derselbe Knopf wie im Einstellungsfenster. Steht bewusst VOR dem
                Eingabefeld, damit er beim Ein- und Ausblenden die Zahl nicht
@@ -2455,7 +3244,7 @@ module.exports = meta => {
                 setSettings(prev => ({ ...prev, slideshow: { ...prev.slideshow, interval: Number(newVal) * 1000 } }));
                 if (oldValue !== newVal * 1000) slideShowManager.start();
               },
-              suffix: " Sek"
+              suffix: " sec"
             })),
           }, {
             label: "Shuffle order",
@@ -2585,7 +3374,7 @@ module.exports = meta => {
             suffix: ' %'
           })),
         }, {
-          label: "Kontrast",
+          label: "Contrast",
           type: "custom",
           render: () => jsx(ErrorBoundary, null, jsx(MenuNumberInput, {
             label: "Contrast",
@@ -2605,13 +3394,10 @@ module.exports = meta => {
       ContextMenu.open(e, MyContextMenu);
     }, [settings]);
 
-    return jsx(IconButton, {
-      TooltipProps: { text: 'Open Settings' },
-      ButtonProps: {
-        className: 'DynamicBackgrounds-SettingsButton',
-        onClick: handleClick,
-      },
-      SvgProps: { path: 'M19.14 12.94c.04-.3.06-.61.06-.94 0-.32-.02-.64-.07-.94l2.03-1.58c.18-.14.23-.41.12-.61l-1.92-3.32c-.12-.22-.37-.29-.59-.22l-2.39.96c-.5-.38-1.03-.7-1.62-.94l-.36-2.54c-.04-.24-.24-.41-.48-.41h-3.84c-.24 0-.43.17-.47.41l-.36 2.54c-.59.24-1.13.57-1.62.94l-2.39-.96c-.22-.08-.47 0-.59.22L2.74 8.87c-.12.21-.08.47.12.61l2.03 1.58c-.05.3-.09.63-.09.94s.02.64.07.94l-2.03 1.58c-.18.14-.23.41-.12.61l1.92 3.32c.12.22.37.29.59.22l2.39-.96c.5.38 1.03.7 1.62.94l.36 2.54c.05.24.24.41.48.41h3.84c.24 0 .44-.17.47-.41l.36-2.54c.59-.24 1.13-.56 1.62-.94l2.39.96c.22.08.47 0 .59-.22l1.92-3.32c.12-.22.07-.47-.12-.61zM12 15.6c-1.98 0-3.6-1.62-3.6-3.6s1.62-3.6 3.6-3.6 3.6 1.62 3.6 3.6-1.62 3.6-3.6 3.6' }
+    return jsx(BarButton, {
+      label: 'Open Settings',
+      path: BAR_ICONS.gear,
+      onClick: handleClick
     })
   }
 
@@ -2791,6 +3577,7 @@ module.exports = meta => {
     letzteAccentQuelle = null;
     /* Zwischengespeicherte Zustaende freigeben. _cachedImages haelt sonst alle
        Bilddaten im Speicher, obwohl das Plugin aus ist. */
+    constants._cachedImages?.forEach(releaseSlideSrc);
     constants._cachedImages = null;
     constants._slideshowFavoritesOnly = null;
     constants._slideshowCategoryFilters = null;
@@ -2928,119 +3715,1140 @@ module.exports = meta => {
   function generateCSS() {
     DOM.removeStyle(meta.slug + '-style');
     DOM.addStyle(meta.slug + '-style', `
-/* Chips: beschriftete Schalter fuer Zustaende und haeufige Aktionen.
-   Der aktive Zustand ist am helleren Rand und Hintergrund erkennbar - genau
-   das fehlte den nackten Icons. */
+/* Gliederung: Variablen, Grundflaeche, Kopf, Werkzeugleiste, Raster und Stapel,
+   Kacheln, Zustaende, Overlays, Einstellungen, Bewegung, danach die
+   Hintergrundebene des Plugins (gehoert nicht zum Manager). */
+
+/* ==========================================================================
+   VARIABLEN
+   ======================================================================== */
+
+/* Die Akzentfarben sind als <color> registriert, nur dann kann eine Transition
+   sie zwischen zwei Bildern ueberblenden. Eine unregistrierte Variable ist fuer
+   den Browser Text und wechselt hart. */
+@property --dbm-accent { syntax: '<color>'; inherits: true; initial-value: #ff4f9a; }
+@property --dbm-accent-2 { syntax: '<color>'; inherits: true; initial-value: #8b5cf6; }
+@property --dbm-on-accent { syntax: '<color>'; inherits: true; initial-value: #020204; }
+
+/* Feste Farben, keine var(--background-*): das Plugin setzt Discords
+   Hintergrundvariablen auf transparent, ein Rueckfallwert greift dann nicht.
+   Ein Theme darf diese Variablen am Wurzelelement ueberschreiben. Die
+   Einstellungsseite und das Menue am Zahnrad liegen ausserhalb des Managers
+   und bekommen sie an ihrer eigenen Wurzel. */
+.DynamicBackgrounds-popoutWrap,
+.DynamicBackgrounds-settings,
+.DynamicBackgrounds-menuRow {
+  --dbm-surface: hsl(232 24% 7%);
+  --dbm-surface-raised: hsl(232 20% 11%);
+  --dbm-surface-hover: hsl(232 18% 15%);
+  --dbm-line: rgba(255, 255, 255, 0.07);
+  --dbm-text: #f4f5fa;
+  --dbm-text-muted: rgba(244, 245, 250, 0.6);
+
+  --dbm-radius-lg: 18px;
+  --dbm-radius-md: 12px;
+  --dbm-radius-full: 999px;
+
+  /* Die Fallbacks gelten, solange noch kein Bild ausgewertet wurde. */
+  --dbm-accent: var(--db-accent-1, #ff4f9a);
+  --dbm-accent-2: var(--db-accent-2, #8b5cf6);
+  --dbm-on-accent: var(--db-accent-1-contrast, #020204);
+
+  /* Federnd mit leichtem Ueberschwingen fuer Hover und Klick, weich
+     auslaufend fuer Ein- und Ausblenden. */
+  --dbm-ease-spring: cubic-bezier(0.34, 1.56, 0.64, 1);
+  --dbm-ease-out: cubic-bezier(0.22, 1, 0.36, 1);
+  --dbm-dur-fast: 180ms;
+  --dbm-dur: 300ms;
+
+  transition: --dbm-accent 1.2s ease, --dbm-accent-2 1.2s ease, --dbm-on-accent 1.2s ease;
+}
+
+/* ==========================================================================
+   GRUNDFLAECHE
+   ======================================================================== */
+
+.DynamicBackgrounds-popoutWrap {
+  display: flex;
+  align-items: flex-start;
+  /* align to the right to match the Popout's align:'right' anchoring instead of centering,
+     which was fighting the actual anchor position and causing the backdrop to render off to one side */
+  justify-content: flex-end;
+  padding: 12px 12px 8px 12px;
+  /* Only the visible card (.DynamicBackgrounds-popoutInner) should catch clicks. The wrap itself
+     can end up overlapping the toolbar icon above it; making it click-through here means the icon
+     stays clickable (to close the popout) even where the wrap's invisible bounding box covers it. */
+  pointer-events: none;
+  background: none;
+  box-shadow: none;
+}
+/* Safety net: Discord's own messagesPopoutWrap-xxxx class (still applied alongside ours for
+   positioning/behavior compatibility) may carry its own background/shadow/backdrop-filter that
+   would otherwise show through unpredictably. Force it off so only our own card renders visually. */
+.DynamicBackgrounds-popoutWrap[class*="messagesPopoutWrap"] {
+  background: none !important;
+  box-shadow: none !important;
+  backdrop-filter: none !important;
+  /* Discords Klasse legt die Huelle auf 420px fest, der Manager ist breiter.
+     Das Popout haengt mit der rechten Kante am Knopf; ist die Huelle schmaler
+     als ihr Inhalt, ragt der Rest rechts aus dem Fenster. So breit wie der
+     Inhalt waechst sie stattdessen nach links. */
+  width: max-content;
+  max-width: calc(100vw - 16px);
+}
+
+.DynamicBackgrounds-popoutInner {
+  position: relative;
+  width: min(760px, 92vw);
+  max-height: min(calc(100vh - 96px), 80vh);
+  /* Farbschein von oben links und schwaecher von unten rechts auf fester
+     Grundfarbe. Kein backdrop-filter: bei laufendem Dauereffekt wuerde er in
+     jedem Frame neu rechnen. */
+  background:
+    radial-gradient(ellipse 110% 90% at 0% 0%, color-mix(in srgb, var(--dbm-accent) 18%, transparent), transparent 56%),
+    radial-gradient(ellipse 100% 80% at 100% 100%, color-mix(in srgb, var(--dbm-accent-2) 10%, transparent), transparent 56%),
+    var(--dbm-surface);
+  color: var(--dbm-text);
+  border-radius: var(--dbm-radius-lg);
+  padding: 0 10px 18px 10px;
+  box-shadow: 0 0 0 1px var(--dbm-line), 0 28px 64px -10px rgba(0, 0, 0, 0.72);
+  overflow: visible; /* popout itself stays fixed; gallery will scroll */
+  display: flex;
+  flex-direction: column;
+  pointer-events: auto;
+}
+
+/* Helle Innenkante oben. Sie liegt auf einem eigenen Element ueber dem Kopf,
+   weil ein inset-Schatten am Fenster vom Kopfbild verdeckt wuerde. */
+.DynamicBackgrounds-popoutInner::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  z-index: 3;
+  border-radius: inherit;
+  pointer-events: none;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.14);
+}
+
+/* Inhalt unter dem Kopf. Der Selektor ist doppelt, weil Discords Klassen am
+   selben Element sonst gleichauf liegen. overflow bleibt sichtbar, damit die
+   Kategorie-Liste ueber das Raster hinausragen darf; gescrollt wird im Raster. */
+.DynamicBackgrounds-popoutInner .DynamicBackgrounds-content {
+  display: flex;
+  flex-direction: column;
+  overflow: visible;
+  border: 0;
+  /* Discords Klasse malt hier eine eigene Flaeche; die Grundfarbe des
+     Fensters soll durchscheinen. */
+  background: none;
+}
+
+/* ==========================================================================
+   KOPF
+   ======================================================================== */
+
+/* Die Buehne: aktuelles Bild als weichgezeichneter Streifen. Das Bild wird
+   einmal gezeichnet und steht dann still, es gibt keine Daueranimation. */
+.DynamicBackgrounds-popoutInner .DynamicBackgrounds-head {
+  position: relative;
+  flex: 0 0 auto;
+  height: 152px;
+  margin: 0 -10px 10px -10px;
+  padding: 0 24px 0 26px;
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 16px;
+  overflow: hidden;
+  border-radius: var(--dbm-radius-lg) var(--dbm-radius-lg) 0 0;
+  background: var(--dbm-surface);
+  color: var(--dbm-text);
+  box-sizing: border-box;
+  padding-bottom: 20px;
+}
+
+/* Zwei Bildebenen fuer die Ueberblendung. Die vordere (.on) blendet ueber der
+   hinteren ein; die hintere bleibt dabei voll sichtbar und wird erst nach der
+   Ueberblendung ausgeschaltet. Blenden beide gleichzeitig, wird es in der
+   Mitte dunkel. inset negativ, damit der Rand der Weichzeichnung
+   ausserhalb des Kopfes liegt. */
+.DynamicBackgrounds-headBg {
+  position: absolute;
+  inset: -40px;
+  z-index: 0;
+  background-position: center;
+  background-size: cover;
+  filter: blur(22px) saturate(1.5) brightness(1.25);
+  opacity: 0;
+}
+.DynamicBackgrounds-headBg.on {
+  z-index: 1;
+  opacity: 1;
+}
+/* Ausgeteilt: Das neue Bild kommt von rechts, leicht gedreht, und legt sich federnd
+   ab; das alte wird nach links geschoben und blendet aus. Beide Animationen enden
+   im Grundzustand (die Ebene ohne .on ist unsichtbar), es bleibt nichts stehen. */
+.DynamicBackgrounds-headBg.deal,
+.DynamicBackgrounds-headCard.deal { animation: DynamicBackgrounds-dealIn 640ms var(--dbm-ease-spring); }
+.DynamicBackgrounds-headBg.out,
+.DynamicBackgrounds-headCard.out { animation: DynamicBackgrounds-dealOut 420ms var(--dbm-ease-out); }
+@keyframes DynamicBackgrounds-dealIn {
+  from { opacity: 0; transform: translateX(110px) rotate(5deg) scale(1.04); }
+}
+@keyframes DynamicBackgrounds-dealOut {
+  from { opacity: 1; transform: none; }
+  to { opacity: 0; transform: translateX(-70px) rotate(-4deg) scale(0.97); }
+}
+
+/* Kleine scharfe Vorschau des laufenden Bildes links neben dem Titel. */
+.DynamicBackgrounds-popoutInner .DynamicBackgrounds-head.hasCard { padding-left: 154px; }
+.DynamicBackgrounds-headCards {
+  position: absolute;
+  left: 26px;
+  bottom: 20px;
+  z-index: 3;
+  width: 104px;
+  height: 66px;
+  pointer-events: none;
+}
+.DynamicBackgrounds-headCard {
+  position: absolute;
+  inset: 0;
+  border-radius: 9px;
+  background-position: center;
+  background-size: cover;
+  box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.28), 0 10px 22px -6px rgba(0, 0, 0, 0.7);
+  rotate: -5deg;
+  opacity: 0;
+}
+.DynamicBackgrounds-headCard.on { opacity: 1; }
+.DynamicBackgrounds-headCard.deal { animation-name: DynamicBackgrounds-cardIn; }
+@keyframes DynamicBackgrounds-cardIn {
+  from { opacity: 0; transform: translateX(150px) rotate(16deg) scale(0.8); }
+}
+
+/* ==========================================================================
+   FENSTER-SPIELEREIEN
+   ========================================================================== */
+
+/* Entfalten: Das Fenster waechst federnd aus der Ecke, in der der Knopf sitzt.
+   Kopf, Leiste und die ersten Stapel steigen gestaffelt nach. Alle Keyframes
+   haben nur einen Startwert, danach gilt wieder der normale Stil. */
+.DynamicBackgrounds-popoutInner {
+  isolation: isolate;
+  transform-origin: 100% 0;
+  animation: DynamicBackgrounds-unfold 420ms var(--dbm-ease-spring) backwards;
+}
+@keyframes DynamicBackgrounds-unfold {
+  from { opacity: 0; transform: scale(0.72); }
+}
+.DynamicBackgrounds-popoutWrap.closing .DynamicBackgrounds-popoutInner {
+  pointer-events: none;
+  animation: DynamicBackgrounds-fold 200ms cubic-bezier(0.5, 0, 0.75, 0) forwards;
+}
+@keyframes DynamicBackgrounds-fold {
+  to { opacity: 0; transform: scale(0.72); }
+}
+.DynamicBackgrounds-popoutInner .DynamicBackgrounds-head { animation: DynamicBackgrounds-rise 380ms var(--dbm-ease-out) 110ms backwards; }
+.DynamicBackgrounds-popoutInner .DynamicBackgrounds-toolbar { animation: DynamicBackgrounds-rise 380ms var(--dbm-ease-out) 190ms backwards; }
+.DynamicBackgrounds-categoryStack { animation: DynamicBackgrounds-rise 380ms var(--dbm-ease-out) calc(250ms + var(--rise-i, 0) * 45ms) backwards; }
+.DynamicBackgrounds-categoryStack:nth-child(2) { --rise-i: 1; }
+.DynamicBackgrounds-categoryStack:nth-child(3) { --rise-i: 2; }
+.DynamicBackgrounds-categoryStack:nth-child(4) { --rise-i: 3; }
+.DynamicBackgrounds-categoryStack:nth-child(5) { --rise-i: 4; }
+.DynamicBackgrounds-categoryStack:nth-child(6) { --rise-i: 5; }
+.DynamicBackgrounds-categoryStack:nth-child(n+7) { --rise-i: 6; }
+@keyframes DynamicBackgrounds-rise {
+  from { opacity: 0; translate: 0 14px; }
+}
+
+/* Farbwelle: ein Ring in der neuen Akzentfarbe, vom Abspielknopf aus. Er liegt
+   in einer beschnittenen Ebene ueber dem Fenster und wird danach entfernt. */
+.DynamicBackgrounds-wave {
+  position: absolute;
+  inset: 0;
+  z-index: 4;
+  overflow: hidden;
+  border-radius: inherit;
+  pointer-events: none;
+}
+.DynamicBackgrounds-waveRing {
+  position: absolute;
+  left: var(--wave-x);
+  top: var(--wave-y);
+  width: calc(var(--wave-r) * 2);
+  height: calc(var(--wave-r) * 2);
+  margin: calc(var(--wave-r) * -1) 0 0 calc(var(--wave-r) * -1);
+  border-radius: 50%;
+  background: radial-gradient(circle closest-side,
+    color-mix(in srgb, var(--db-accent-1, #ff4f9a) 10%, transparent) 40%,
+    color-mix(in srgb, var(--db-accent-1, #ff4f9a) 60%, transparent) 82%,
+    transparent 100%);
+  animation: DynamicBackgrounds-wave 900ms cubic-bezier(0.22, 0.7, 0.3, 1) forwards;
+}
+@keyframes DynamicBackgrounds-wave {
+  from { transform: scale(0.03); opacity: 1; }
+  to { transform: scale(1); opacity: 0; }
+}
+
+/* Lichtschein unter der Maus. Die Klammer beschneidet an den Fensterecken, der
+   Schein darin wandert nur per transform. */
+.DynamicBackgrounds-glowClip {
+  position: absolute;
+  inset: 0;
+  z-index: -1;
+  overflow: hidden;
+  border-radius: inherit;
+  pointer-events: none;
+}
+.DynamicBackgrounds-glow {
+  position: absolute;
+  left: 0;
+  top: 0;
+  width: 440px;
+  height: 440px;
+  background: radial-gradient(circle closest-side, color-mix(in srgb, var(--dbm-accent) 22%, transparent), transparent);
+  transform: translate3d(var(--glow-x, -600px), var(--glow-y, -600px), 0);
+  animation: DynamicBackgrounds-glowIn 200ms ease-out;
+}
+@keyframes DynamicBackgrounds-glowIn {
+  from { opacity: 0; }
+}
+
+/* Magnetische Knoepfe: translate folgt der Maus, beim Loslassen federt es zurueck. */
+.DynamicBackgrounds-playWrap { transition: translate 320ms var(--dbm-ease-spring); }
+.DynamicBackgrounds-headControls > .DynamicBackgrounds-headBtn { transition: transform var(--dbm-dur-fast) var(--dbm-ease-spring), background-color var(--dbm-dur-fast) ease, color var(--dbm-dur-fast) ease, translate 320ms var(--dbm-ease-spring); }
+
+.DynamicBackgrounds-headShade {
+  position: absolute;
+  inset: 0;
+  z-index: 2;
+  pointer-events: none;
+  background:
+    linear-gradient(90deg, rgba(8, 9, 14, 0.42) 0%, rgba(8, 9, 14, 0) 55%),
+    linear-gradient(180deg, rgba(8, 9, 14, 0) 0%, rgba(8, 9, 14, 0.2) 45%, var(--dbm-surface) 100%);
+}
+
+.DynamicBackgrounds-headText,
+.DynamicBackgrounds-headControls {
+  position: relative;
+  z-index: 3;
+}
+
+.DynamicBackgrounds-headText {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+.DynamicBackgrounds-headEyebrow {
+  font-size: 11px;
+  font-weight: 700;
+  line-height: 1;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--dbm-text);
+  opacity: 0.8;
+  text-shadow: 0 1px 8px rgba(0, 0, 0, 0.5);
+}
+.DynamicBackgrounds-headTitle {
+  margin: 0;
+  font-size: 30px;
+  font-weight: 800;
+  line-height: 1.12;
+  letter-spacing: -0.01em;
+  color: var(--dbm-text);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  text-shadow: 0 2px 14px rgba(0, 0, 0, 0.55);
+}
+.DynamicBackgrounds-headMeta {
+  min-height: 18px;
+  font-size: 13px;
+  line-height: 18px;
+  color: var(--dbm-text-muted);
+  text-shadow: 0 1px 8px rgba(0, 0, 0, 0.5);
+}
+
+.DynamicBackgrounds-headControls {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.DynamicBackgrounds-headBtn {
+  appearance: none;
+  display: grid;
+  place-items: center;
+  width: 36px;
+  height: 36px;
+  padding: 0;
+  border: 0;
+  border-radius: var(--dbm-radius-full);
+  background: rgba(255, 255, 255, 0.12);
+  color: var(--dbm-text);
+  cursor: pointer;
+  transition: transform var(--dbm-dur-fast) var(--dbm-ease-spring), background-color var(--dbm-dur-fast) ease, color var(--dbm-dur-fast) ease;
+}
+.DynamicBackgrounds-headBtn:hover { transform: scale(1.1); background: rgba(255, 255, 255, 0.2); }
+.DynamicBackgrounds-headBtn:active { transform: scale(0.93); }
+.DynamicBackgrounds-headBtn:focus-visible { outline: 2px solid #fff; outline-offset: 3px; }
+.DynamicBackgrounds-headBtn[aria-pressed="true"] { background: var(--dbm-accent); color: var(--dbm-on-accent); }
+
+.DynamicBackgrounds-headBtn.play {
+  width: 56px;
+  height: 56px;
+  background: var(--dbm-accent);
+  color: var(--dbm-on-accent);
+  box-shadow: 0 6px 20px -4px color-mix(in srgb, var(--dbm-accent) 70%, transparent);
+}
+.DynamicBackgrounds-headBtn.play:hover { transform: scale(1.08); background: var(--dbm-accent); }
+
+/* Der Ring sitzt auf einem Rahmen um den Knopf, damit Hover und Druck nur den
+   Knopf skalieren und der Ring ruhig bleibt. */
+.DynamicBackgrounds-playWrap {
+  position: relative;
+  width: 72px;
+  height: 72px;
+  display: grid;
+  place-items: center;
+}
+.DynamicBackgrounds-ring {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  transform: rotate(-90deg);
+  pointer-events: none;
+  overflow: visible;
+}
+.DynamicBackgrounds-ring circle {
+  fill: none;
+  stroke-width: 3;
+}
+.DynamicBackgrounds-ringTrack { stroke: rgba(255, 255, 255, 0.18); }
+.DynamicBackgrounds-ringBar {
+  stroke: var(--dbm-accent);
+  stroke-linecap: butt;
+  stroke-dasharray: 1 1;
+  stroke-dashoffset: var(--ring-from, 1);
+}
+/* Nur im laufenden Zustand animiert. Die Startposition und Restdauer kommen
+   aus der Diashow, der Ring zeigt also die echte Zeit bis zum Wechsel. */
+.DynamicBackgrounds-ringBar.running {
+  animation: DynamicBackgrounds-ring var(--ring-ms, 10000ms) linear forwards;
+}
+@keyframes DynamicBackgrounds-ring {
+  from { stroke-dashoffset: var(--ring-from, 1); }
+  to { stroke-dashoffset: 0; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .DynamicBackgrounds-headBtn { transition: none; }
+  .DynamicBackgrounds-headBtn:hover,
+  .DynamicBackgrounds-headBtn:active { transform: none; }
+  /* Entfalten wird ein kurzes Einblenden, Austeilen ein Ueberblenden; keine
+     Welle (wird nicht erzeugt), kein Magnet, kein Schein (beide werden nicht angemeldet). */
+  .DynamicBackgrounds-popoutInner { animation: DynamicBackgrounds-fadeIn 150ms linear backwards; }
+  .DynamicBackgrounds-popoutInner .DynamicBackgrounds-head,
+  .DynamicBackgrounds-popoutInner .DynamicBackgrounds-toolbar,
+  .DynamicBackgrounds-categoryStack { animation: none; }
+  .DynamicBackgrounds-headBg.deal,
+  .DynamicBackgrounds-headCard.deal { animation: DynamicBackgrounds-fadeIn 400ms linear; }
+  .DynamicBackgrounds-headBg.out,
+  .DynamicBackgrounds-headCard.out { animation: DynamicBackgrounds-fadeOut 400ms linear; }
+  .DynamicBackgrounds-headControls > .DynamicBackgrounds-headBtn,
+  .DynamicBackgrounds-playWrap { transition: none; }
+}
+@keyframes DynamicBackgrounds-fadeIn { from { opacity: 0; } }
+@keyframes DynamicBackgrounds-fadeOut { to { opacity: 0; } }
+
+/* ==========================================================================
+   WERKZEUGLEISTE
+   ======================================================================== */
+
+/* Eine Reihe direkt unter dem Kopf. Flaechen werden beim Ueberfahren eine
+   Stufe heller, runde Knoepfe federn. Keine Trennlinie: die Leiste setzt sich
+   durch Abstand und gefuellte Flaechen vom Raster ab. */
+.DynamicBackgrounds-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: 4px 12px 16px 2px;
+}
+
+/* Segmentschalter: Spur als Pille, der Daumen in Akzentfarbe gleitet zum
+   gewaehlten Segment. Beide Segmente sind gleich breit, damit der Daumen sich
+   ueber eine reine Verschiebung um seine eigene Breite bewegen kann. */
+.DynamicBackgrounds-seg {
+  position: relative;
+  flex: 0 0 auto;
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  padding: 4px;
+  border-radius: var(--dbm-radius-full);
+  background: var(--dbm-surface-raised);
+  box-shadow: inset 0 0 0 1px var(--dbm-line);
+}
+.DynamicBackgrounds-segThumb {
+  position: absolute;
+  top: 4px;
+  bottom: 4px;
+  left: 4px;
+  width: calc(50% - 4px);
+  border-radius: var(--dbm-radius-full);
+  background: var(--dbm-accent);
+  box-shadow: 0 4px 14px -4px var(--dbm-accent);
+  transform: translateX(0);
+  transition: transform 420ms var(--dbm-ease-spring);
+}
+.DynamicBackgrounds-seg[data-pos="1"] .DynamicBackgrounds-segThumb {
+  transform: translateX(100%);
+}
+.DynamicBackgrounds-segBtn {
+  position: relative;
+  z-index: 1;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  height: 30px;
+  padding: 0 16px;
+  border: 0;
+  border-radius: var(--dbm-radius-full);
+  background: none;
+  color: var(--dbm-text-muted);
+  font-size: 13px;
+  font-weight: 700;
+  line-height: 1;
+  white-space: nowrap;
+  cursor: pointer;
+  transition: color var(--dbm-dur-fast) ease;
+}
+.DynamicBackgrounds-segBtn:hover { color: var(--dbm-text); }
+.DynamicBackgrounds-segBtn.on,
+.DynamicBackgrounds-segBtn.on:hover { color: var(--dbm-on-accent); }
+
+/* Kategorie-Feld: Pille mit Ordnersymbol, Beschriftung und Pfeil. */
+.DynamicBackgrounds-quickWrap {
+  position: relative;
+  flex: 1 1 0;
+  min-width: 130px;
+  max-width: 280px;
+}
+.DynamicBackgrounds-field {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: 38px;
+  padding: 0 10px 0 14px;
+  border: 0;
+  border-radius: var(--dbm-radius-full);
+  background: var(--dbm-surface-raised);
+  box-shadow: inset 0 0 0 1px var(--dbm-line);
+  color: var(--dbm-text);
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background-color var(--dbm-dur-fast) ease, box-shadow var(--dbm-dur-fast) ease;
+}
+.DynamicBackgrounds-field:hover,
+.DynamicBackgrounds-field.open { background: var(--dbm-surface-hover); }
+.DynamicBackgrounds-field.filtered .DynamicBackgrounds-fieldIcon { color: var(--dbm-accent); }
+.DynamicBackgrounds-fieldIcon { flex: 0 0 auto; color: var(--dbm-text-muted); }
+.DynamicBackgrounds-fieldText {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  text-align: left;
+}
+.DynamicBackgrounds-fieldArrow {
+  flex: 0 0 auto;
+  color: var(--dbm-text-muted);
+  transition: transform var(--dbm-dur) var(--dbm-ease-spring);
+}
+.DynamicBackgrounds-field.open .DynamicBackgrounds-fieldArrow { transform: rotate(180deg); }
+
+/* Liste: erhoehte dunkle Flaeche, sanftes Aufklappen aus opacity und
+   transform. Die Animation startet beim Einhaengen, also nur nach einem Klick. */
+.DynamicBackgrounds-quickMenu {
+  position: absolute;
+  top: calc(100% + 8px);
+  left: 0;
+  min-width: 100%;
+  max-width: 340px;
+  max-height: 280px;
+  overflow-y: auto;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(255, 255, 255, 0.22) transparent;
+  padding: 6px;
+  box-sizing: border-box;
+  border-radius: var(--dbm-radius-lg);
+  background: var(--dbm-surface-raised);
+  color: var(--dbm-text);
+  box-shadow: 0 0 0 1px var(--dbm-line), 0 18px 40px -8px rgba(0, 0, 0, 0.75);
+  z-index: 30;
+  font-size: 14px;
+  transform-origin: 24px 0;
+  animation: DynamicBackgrounds-menuIn 260ms var(--dbm-ease-out);
+}
+@keyframes DynamicBackgrounds-menuIn {
+  from { opacity: 0; transform: translateY(-8px) scale(0.97); }
+  to { opacity: 1; transform: none; }
+}
+.DynamicBackgrounds-quickMenuItem {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 9px 12px;
+  border-radius: var(--dbm-radius-md);
+  cursor: pointer;
+  outline: none;
+  transition: background-color var(--dbm-dur-fast) ease;
+}
+.DynamicBackgrounds-quickMenuItem:hover,
+.DynamicBackgrounds-quickMenuItem:focus-visible { background: var(--dbm-surface-hover); }
+.DynamicBackgrounds-quickMenuItem:focus-visible { box-shadow: inset 0 0 0 2px var(--dbm-accent); }
+.DynamicBackgrounds-quickMenuText { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.DynamicBackgrounds-quickCheck { flex: 0 0 auto; color: var(--dbm-accent); opacity: 0; }
+.DynamicBackgrounds-quickMenuItem.on { color: var(--dbm-accent); font-weight: 700; }
+.DynamicBackgrounds-quickMenuItem.on .DynamicBackgrounds-quickCheck { opacity: 1; }
+
+/* Rechts die runden Knoepfe. Der erste (Bilder hinzufuegen) ist gefuellt. */
+.DynamicBackgrounds-toolEnd {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-left: auto;
+}
+.DynamicBackgrounds-barBtn {
+  flex: 0 0 auto;
+  width: 38px;
+  height: 38px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  background: var(--dbm-surface-raised);
+  box-shadow: inset 0 0 0 1px var(--dbm-line);
+  color: var(--dbm-text-muted);
+  cursor: pointer;
+  transition: transform var(--dbm-dur) var(--dbm-ease-spring), background-color var(--dbm-dur-fast) ease, color var(--dbm-dur-fast) ease;
+}
+.DynamicBackgrounds-barBtn:hover {
+  background: var(--dbm-surface-hover);
+  color: var(--dbm-text);
+  transform: scale(1.1);
+}
+.DynamicBackgrounds-barBtn:active { transform: scale(0.92); }
+.DynamicBackgrounds-barBtn.primary {
+  background: var(--dbm-accent);
+  color: var(--dbm-on-accent);
+  box-shadow: 0 4px 14px -4px var(--dbm-accent);
+}
+.DynamicBackgrounds-barBtn.primary:hover { filter: brightness(1.12); }
+
+/* Sichtbarer Fokus fuer alle Bedienelemente der Leiste */
+.DynamicBackgrounds-barBtn:focus-visible,
+.DynamicBackgrounds-field:focus-visible,
+.DynamicBackgrounds-segBtn:focus-visible,
+.DynamicBackgrounds-chip:focus-visible,
+.DynamicBackgrounds-addTile:focus-visible {
+  outline: 2px solid var(--dbm-accent);
+  outline-offset: 2px;
+}
+
+/* Zeile innerhalb einer Kategorie: zurueck und loeschen */
 .DynamicBackgrounds-chip {
   display: inline-flex;
   align-items: center;
   gap: 6px;
-  height: 30px;
-  padding: 0 11px;
+  height: 32px;
+  padding: 0 14px;
+  border: 0;
+  border-radius: var(--dbm-radius-full);
+  background: var(--dbm-surface-raised);
+  box-shadow: inset 0 0 0 1px var(--dbm-line);
+  color: var(--dbm-text);
   font-size: 13px;
+  font-weight: 600;
   line-height: 1;
   white-space: nowrap;
   cursor: pointer;
-  border-radius: 8px;
-  border: 1px solid rgba(255, 255, 255, 0.10);
-  background: rgba(255, 255, 255, 0.03);
-  color: var(--interactive-normal, rgba(255, 255, 255, 0.72));
-  transition: background-color 140ms ease, border-color 140ms ease, color 140ms ease, box-shadow 140ms ease;
+  transition: transform var(--dbm-dur) var(--dbm-ease-spring), background-color var(--dbm-dur-fast) ease;
 }
-
 .DynamicBackgrounds-chip:hover {
-  background: rgba(255, 255, 255, 0.07);
-  border-color: rgba(255, 255, 255, 0.18);
-  color: var(--interactive-active, #fff);
+  background: var(--dbm-surface-hover);
+  transform: translateX(-2px);
 }
 
-.DynamicBackgrounds-toolbar {
+.DynamicBackgrounds-categoryBar {
   display: flex;
-  flex-direction: column;
-  gap: 6px;
-  margin: 8px 0;
-}
-
-.DynamicBackgrounds-toolRow {
-  display: flex;
+  gap: 8px;
+  padding: 0 12px 6px 2px;
   align-items: center;
-  gap: 6px;
-  flex-wrap: wrap;
 }
 
-/* Die Ueberschrift links macht den Bezug klar. "Favorites" allein sagt nicht,
-   ob damit gefiltert, markiert oder geloescht wird. Feste Breite, damit beide
-   Zeilen an derselben Kante beginnen. */
-.DynamicBackgrounds-toolLabel {
-  flex: 0 0 auto;
-  width: 76px;
-  font-size: 11px;
-  letter-spacing: 0.03em;
-  text-transform: uppercase;
-  /* Ohne nowrap bricht "SLIDESHOW" bei 68px in zwei Zeilen um. */
-  white-space: nowrap;
-  color: var(--text-muted, rgba(255, 255, 255, 0.38));
-  user-select: none;
-}
-
-/* Ueberlaufmenue und Einstellungen als eigene Gruppe ganz rechts. */
-.DynamicBackgrounds-toolEnd {
+.DynamicBackgrounds-categoryButton {
   display: flex;
-  align-items: center;
-  gap: 4px;
-  margin-left: auto;
-  padding-left: 12px;
-}
-
-.DynamicBackgrounds-iconButton,
-.DynamicBackgrounds-toolEnd .DynamicBackgrounds-quickButton,
-.DynamicBackgrounds-toolEnd > button {
-  width: 30px;
-  height: 30px;
-  display: inline-flex;
   align-items: center;
   justify-content: center;
+  width: 32px;
+  height: 32px;
+  border: none;
+  border-radius: 50%;
+  background: var(--dbm-surface-raised);
+  color: var(--dbm-text);
+  font-size: 18px;
   cursor: pointer;
-  border-radius: 8px;
-  border: 1px solid transparent;
-  background: none;
-  color: var(--interactive-normal, rgba(255, 255, 255, 0.6));
-  transition: background-color 140ms ease, border-color 140ms ease, color 140ms ease;
+  transition: transform var(--dbm-dur) var(--dbm-ease-spring), background-color var(--dbm-dur-fast) ease;
+}
+.DynamicBackgrounds-categoryButton:hover {
+  background: var(--dbm-surface-hover);
+  transform: scale(1.1);
+}
+.DynamicBackgrounds-categoryButton.delete {
+  background: #c62828;
+  color: #fff;
+}
+.DynamicBackgrounds-categoryButton.delete:hover {
+  background: #d15353;
+}
+.DynamicBackgrounds-categoryInputRow {
+  display: flex;
+  gap: 8px;
+  padding: 0 12px 10px 2px;
+}
+.DynamicBackgrounds-categoryInput {
+  flex: 1;
+  height: 36px;
+  padding: 0 14px;
+  border-radius: var(--dbm-radius-full);
+  border: none;
+  background: var(--dbm-surface-raised);
+  box-shadow: inset 0 0 0 1px var(--dbm-line);
+  color: var(--dbm-text);
+  font-size: 14px;
+  outline: none;
+}
+.DynamicBackgrounds-categoryInput:focus {
+  box-shadow: inset 0 0 0 2px var(--dbm-accent);
 }
 
-.DynamicBackgrounds-iconButton:hover,
-.DynamicBackgrounds-toolEnd > button:hover {
-  background: rgba(255, 255, 255, 0.07);
-  border-color: rgba(255, 255, 255, 0.14);
-  color: var(--interactive-active, #fff);
+
+/* ==========================================================================
+   RASTER UND STAPEL
+   ======================================================================== */
+
+.DynamicBackgrounds-gridWrapper {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 12px;
+  flex: 1 1 auto;
+  overflow: auto; /* gallery/groups area scrolls */
+  max-height: min(calc(100vh - 216px), 60vh); /* leave space for header and controls, scaled with viewport instead of a fixed offset */
+  padding: 12px;
+  margin-bottom: 0.5rem;
+  box-sizing: border-box;
+  align-content: start;
+  transform: translateZ(0); /* promote layer to reduce scroll jank */
+  scroll-behavior: smooth;
+  scrollbar-gutter: stable;
+  mask-image: linear-gradient(#0000, #000 0.5rem, #000 calc(100% - 0.5rem), #0000 100%), linear-gradient(to left, #000 0.75rem, #0000 0.75rem);
 }
 
-.DynamicBackgrounds-chip.amber {
-  border-color: rgba(250, 166, 26, 0.45);
-  background: rgba(250, 166, 26, 0.10);
-  color: #faa61a;
-  box-shadow: 0 0 10px 0 rgba(250, 166, 26, 0.18);
+/* Jedes direkte Kind (Stapel oder Bildkachel) bekommt dieselbe Huelle. */
+.DynamicBackgrounds-gridWrapper > * {
+  padding: 6px;
+  box-sizing: border-box;
+  min-height: 100px;
+  margin-bottom: 12px;
 }
 
-.DynamicBackgrounds-chip.active {
-  border-color: rgba(255, 215, 0, 0.45);
-  background: rgba(255, 215, 0, 0.10);
-  color: #ffd700;
-  box-shadow: 0 0 10px 0 rgba(255, 215, 0, 0.18);
+.DynamicBackgrounds-gridWrapper::-webkit-scrollbar {
+  width: 10px;
+}
+.DynamicBackgrounds-gridWrapper::-webkit-scrollbar-track {
+  background: rgba(0,0,0,0.12);
+  border-radius: 10px;
+}
+.DynamicBackgrounds-gridWrapper::-webkit-scrollbar-thumb {
+  background: rgba(255,255,255,0.06);
+  border-radius: 10px;
+  border: 2px solid rgba(0,0,0,0.18);
+}
+.DynamicBackgrounds-gridWrapper::-webkit-scrollbar-thumb:hover {
+  background: rgba(255,255,255,0.12);
 }
 
-/* Kachel hebt sich beim Ueberfahren leicht an. Bewegung erzeugt mehr
-   Wertigkeit als jeder Schein - und transform kostet nichts, weil es
-   ausschliesslich auf der GPU laeuft. */
+/* Kachel hebt sich beim Ueberfahren leicht an (siehe Zustaende). Bewegung
+   erzeugt mehr Wertigkeit als jeder Schein - und transform kostet nichts,
+   weil es ausschliesslich auf der GPU laeuft. Steht nach der Huelle oben,
+   damit min-height: 0 dort gewinnt. */
 .DynamicBackgrounds-categoryStack {
-  padding: 6px 6px 2px;
-  border-radius: 12px;
+  position: relative;
+  overflow: visible;   /* die Faecherung darf seitlich ueberstehen */
+  min-height: 0;
+  cursor: pointer;
+  border-radius: 10px;
   transition: transform 180ms cubic-bezier(0.22,0.61,0.36,1), background-color 180ms ease;
 }
 
-/* Nur Anheben, keine Hintergrundflaeche - der Rahmen wirkte unruhig. */
+/* Die Faecherflaeche der Karten. Klicks sollen die Kachel treffen, nicht das
+   Einzelbild, daher pointer-events: none (die Karten schalten es wieder ein). */
+.DynamicBackgrounds-stackFan {
+  position: relative;
+  display: block;
+  height: 176px;
+  box-sizing: border-box;
+  pointer-events: none;
+  /* Neigung zur Maus: --tilt-x/--tilt-y setzt das Skript auf dem Stapel. Der
+     Faecher traegt sie, nicht die Karten, damit deren transform und Keyframes
+     unberuehrt bleiben. Beim Verlassen federt er zurueck. */
+  transform: perspective(760px) rotateX(var(--tilt-x, 0deg)) rotateY(var(--tilt-y, 0deg));
+  transform-origin: 50% 85%;
+  transition: transform 620ms var(--dbm-ease-spring);
+}
+.DynamicBackgrounds-categoryStack:hover .DynamicBackgrounds-stackFan,
+.DynamicBackgrounds-addTile:hover .DynamicBackgrounds-stackFan {
+  transition: transform 140ms var(--dbm-ease-out);
+}
+
+/* Lichtschein unter dem Stapel. Statisch (Verlauf statt Filter); beim Hover
+   werden nur opacity und transform uebergeblendet. */
+.DynamicBackgrounds-stackFan::before {
+  content: '';
+  position: absolute;
+  left: 50%;
+  bottom: -18px;
+  width: 250px;
+  height: 84px;
+  margin-left: -125px;
+  background: radial-gradient(closest-side, color-mix(in srgb, var(--dbm-accent) 62%, transparent), transparent);
+  opacity: 0;
+  transform: scale(0.7);
+  transition: opacity 320ms var(--dbm-ease-out), transform 420ms var(--dbm-ease-spring);
+  pointer-events: none;
+}
+.DynamicBackgrounds-categoryStack:hover .DynamicBackgrounds-stackFan::before,
+.DynamicBackgrounds-addTile:hover .DynamicBackgrounds-stackFan::before {
+  opacity: 0.85;
+  transform: scale(1);
+}
+
+/* Plakette mit der Bildanzahl an der oberen rechten Ecke des Stapels. */
+.DynamicBackgrounds-stackBadge {
+  position: absolute;
+  top: -6px;
+  left: calc(50% + 103px);
+  transform: translateX(-100%);
+  z-index: 500;
+  min-width: 22px;
+  box-sizing: border-box;
+  padding: 2px 8px;
+  border-radius: var(--dbm-radius-full);
+  background: rgba(8, 9, 18, 0.82);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  color: var(--dbm-text-muted);
+  font-size: 11px;
+  font-weight: 700;
+  line-height: 16px;
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+  pointer-events: none;
+  transition: background-color var(--dbm-dur-fast) ease, color var(--dbm-dur-fast) ease, border-color var(--dbm-dur-fast) ease;
+}
+.DynamicBackgrounds-categoryStack:hover .DynamicBackgrounds-stackBadge {
+  background: var(--dbm-accent);
+  border-color: transparent;
+  color: var(--dbm-on-accent);
+}
+
+/* Position, Drehung, Tiefe, Deckkraft und Bewegung je Karte kommen als
+   Inline-Style aus dem JSX, weil sie pro Karte berechnet werden. */
+.DynamicBackgrounds-stackCard {
+  position: absolute;
+  left: 50%;
+  bottom: 0;
+  display: block;
+  width: 190px;
+  height: 120px;
+  object-fit: cover;
+  border-radius: 10px;
+  /* Deutlich sichtbar, sonst verschwimmen aehnliche Bilder zu Streifen */
+  border: 1px solid rgba(255,255,255,0.13);
+  box-shadow: 0 10px 26px rgba(0,0,0,0.45);
+  pointer-events: auto;
+  will-change: transform;
+  backface-visibility: hidden;
+  transform-style: preserve-3d;
+}
+.DynamicBackgrounds-stackCard.is-queued {
+  box-shadow: 0 4px 12px rgba(0,0,0,0.3);
+}
+
+/* Name und Anzahl unter dem Stapel, dauerhaft sichtbar. */
+.DynamicBackgrounds-categoryLabel {
+  display: flex;
+  align-items: baseline;
+  justify-content: center;
+  gap: 8px;
+  margin-top: 10px;
+  padding: 0 2px;
+  font-size: 13px;
+  line-height: 1.3;
+}
+
+.DynamicBackgrounds-categoryName {
+  color: var(--dbm-text);
+  font-weight: 700;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* ==========================================================================
+   KACHELN
+   ======================================================================== */
+
+.DynamicBackgrounds-imageWrapper {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  position: relative;
+  border-radius: var(--dbm-radius-md);
+  background-color: #0000;
+  flex: 0 0 calc(50% - 0.25rem);
+  aspect-ratio: 16 / 9;
+  outline: 2px solid transparent;
+  outline-offset: 0;
+  overflow: hidden;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
+  /* Die Neigung (transform) gibt es nur beim Hover; translate ist eine eigene
+     Eigenschaft und hebt die Kachel, ohne die Neigung zu stoeren. */
+  transition: outline-color 400ms cubic-bezier(0.4, 0, 0.2, 1),
+              box-shadow 300ms ease,
+              translate 360ms var(--dbm-ease-spring),
+              transform 620ms var(--dbm-ease-spring);
+  cursor: grab;
+}
+.DynamicBackgrounds-imageWrapper:active {
+  cursor: grabbing;
+}
+/* Feine helle Innenkante, ueber dem Bild */
+.DynamicBackgrounds-imageWrapper::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  z-index: 2;
+  border-radius: inherit;
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.14), inset 0 1px 0 rgba(255, 255, 255, 0.2);
+  pointer-events: none;
+}
+
+.DynamicBackgrounds-image {
+  display: block;
+  width: 100%;
+  height: 110px;
+  object-fit: cover;
+  min-height: 100%;
+  min-width: 100%;
+}
+.DynamicBackgrounds-image.late {
+  animation: fade-in 250ms cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+/* Infos am unteren Rand: nur bei Hover und Fokus, als Pillen ueber einem
+   weichen Verlauf. Oben liegen Herz, Marke und Loeschen, es gibt also keine
+   Ueberlagerung. */
+.DynamicBackgrounds-imageData {
+  position: absolute;
+  inset: auto 0 0;
+  z-index: 1;
+  display: flex;
+  align-items: flex-end;
+  gap: 4px;
+  padding: 24px 8px 8px;
+  background: linear-gradient(transparent, rgba(6, 7, 14, 0.72));
+  opacity: 0;
+  transform: translateY(5px);
+  pointer-events: none;
+  transition: opacity var(--dbm-dur-fast) ease, transform var(--dbm-dur-fast) var(--dbm-ease-out);
+}
+.DynamicBackgrounds-imageWrapper:is(:hover, :focus-visible, :focus-within) .DynamicBackgrounds-imageData {
+  opacity: 1;
+  transform: none;
+}
+.DynamicBackgrounds-imageData > span {
+  padding: 1px 8px;
+  border-radius: var(--dbm-radius-full);
+  background: color-mix(in srgb, var(--dbm-surface) 90%, transparent);
+  color: var(--dbm-text-muted);
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 16px;
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+
+/* Laden: dunkler Platzhalter mit einem einzigen Schimmer je Ladevorgang.
+   Danach bleibt er ruhig; ein endloses Schimmern waere Dauerbewegung. */
+.DynamicBackgrounds-imageSkeleton {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  background: var(--dbm-surface-raised);
+}
+.DynamicBackgrounds-imageSkeleton::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(100deg, transparent 30%, rgba(255, 255, 255, 0.07) 50%, transparent 70%);
+  transform: translateX(-100%);
+  animation: DynamicBackgrounds-sheen 1100ms var(--dbm-ease-out) 1 forwards;
+}
+@keyframes DynamicBackgrounds-sheen {
+  to { transform: translateX(100%); }
+}
+
+/* Bildfehler: gestaltete Kachel statt rohem Text */
+.DynamicBackgrounds-imageError {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  background: var(--dbm-surface-raised);
+  color: var(--dbm-text-muted);
+  font-size: 12px;
+  font-weight: 600;
+}
+.DynamicBackgrounds-imageError svg { opacity: 0.7; }
+
+.DynamicBackgrounds-favoriteButton,
+.DynamicBackgrounds-deleteButton {
+  display: flex;
+  position: absolute;
+  z-index: 3;
+  top: 8px;
+  border: 0;
+  padding: 4px;
+  border-radius: var(--dbm-radius-full);
+  color: #fff;
+  opacity: 0;
+  cursor: pointer;
+  transition: background-color 150ms ease, opacity 250ms cubic-bezier(0.4, 0, 0.2, 1), color 150ms ease, transform var(--dbm-dur) var(--dbm-ease-spring);
+}
+.DynamicBackgrounds-favoriteButton {
+  left: 8px;
+  background-color: rgba(8, 9, 18, 0.62);
+}
+.DynamicBackgrounds-deleteButton {
+  right: 8px;
+  background-color: #c62828;
+}
+/* Marke fuer das Bild, das gerade als Hintergrund laeuft */
+.DynamicBackgrounds-nowBadge {
+  position: absolute;
+  z-index: 3;
+  top: 8px;
+  left: 50%;
+  transform: translateX(-50%);
+  padding: 2px 9px;
+  border-radius: var(--dbm-radius-full);
+  background: var(--dbm-accent);
+  color: var(--dbm-on-accent);
+  font-size: 11px;
+  font-weight: 800;
+  line-height: 16px;
+  letter-spacing: 0.02em;
+  pointer-events: none;
+}
+
+/* Rueckfrage an der Kachel selbst */
+.DynamicBackgrounds-confirm {
+  position: absolute;
+  inset: 0;
+  z-index: 6;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  border-radius: inherit;
+  background: rgba(6, 7, 14, 0.84);
+  cursor: default;
+  animation: DynamicBackgrounds-confirmIn 200ms var(--dbm-ease-out);
+}
+.DynamicBackgrounds-confirmText {
+  color: var(--dbm-text);
+  font-size: 13px;
+  font-weight: 700;
+}
+.DynamicBackgrounds-confirmButtons {
+  display: flex;
+  gap: 8px;
+}
+.DynamicBackgrounds-confirmDelete,
+.DynamicBackgrounds-confirmCancel {
+  border: 0;
+  padding: 6px 14px;
+  border-radius: var(--dbm-radius-full);
+  font-size: 12px;
+  font-weight: 700;
+  cursor: pointer;
+  transition: transform var(--dbm-dur-fast) var(--dbm-ease-spring), background-color var(--dbm-dur-fast) ease;
+}
+.DynamicBackgrounds-confirmDelete {
+  background: #d6403f;
+  color: #fff;
+}
+.DynamicBackgrounds-confirmCancel {
+  background: rgba(255, 255, 255, 0.14);
+  color: var(--dbm-text);
+}
+.DynamicBackgrounds-confirmDelete:hover,
+.DynamicBackgrounds-confirmCancel:hover {
+  transform: scale(1.07);
+}
+.DynamicBackgrounds-confirmDelete:focus-visible,
+.DynamicBackgrounds-confirmCancel:focus-visible {
+  outline: 2px solid #fff;
+  outline-offset: 2px;
+}
+@keyframes DynamicBackgrounds-confirmIn {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+/* ==========================================================================
+   ZUSTAENDE
+   ======================================================================== */
+
 .DynamicBackgrounds-categoryStack:hover {
   transform: translateY(-3px);
+}
+
+.DynamicBackgrounds-categoryStack:hover .DynamicBackgrounds-categoryName {
+  color: var(--dbm-text);
+}
+
+/* Beim Ueberfahren leuchten alle Karten des Stapels, auch die verdeckten. */
+.DynamicBackgrounds-categoryStack:hover img {
+  box-shadow: 0 10px 26px rgba(0, 0, 0, 0.45),
+              0 0 16px 0 color-mix(in srgb, var(--dbm-accent) 30%, transparent);
 }
 
 /* Die Kategorie, aus der das aktuell laufende Bild stammt. Beantwortet auf
@@ -3054,8 +4862,8 @@ module.exports = meta => {
   margin-left: 7px;
   vertical-align: middle;
   border-radius: 50%;
-  background: #ff5abe;
-  box-shadow: 0 0 8px 2px rgba(255, 90, 190, 0.6);
+  background: var(--dbm-accent);
+  box-shadow: 0 0 8px 1px color-mix(in srgb, var(--dbm-accent) 60%, transparent);
 }
 
 .DynamicBackgrounds-categoryStack.has-active img:last-of-type {
@@ -3063,42 +4871,461 @@ module.exports = meta => {
   outline-offset: -1px;
 }
 
-/* Die Karten bekommen ihren Schatten per Inline-Style aus dem JSX, und
-   Inline-Styles schlagen jedes Stylesheet - daher !important. */
-.DynamicBackgrounds-categoryStack:hover img {
-  box-shadow: 0 10px 26px rgba(0, 0, 0, 0.45),
-              0 0 16px 0 rgba(255, 255, 255, 0.14) !important;
+/* Make stacks keyboard-focusable and show label on focus */
+.DynamicBackgrounds-categoryStack:focus {
+  outline: 2px solid var(--focus-primary, rgba(0,170,255,0.9));
+  outline-offset: 2px;
 }
 
-/* Drop-Zone reagiert, sobald eine Datei darueber gezogen wird. Das ist
-   gleichzeitig echtes Feedback ("hier kannst du loslassen") und die Stelle,
-   an der ein Leuchten wirklich etwas aussagt statt nur zu dekorieren. */
-.DynamicBackgrounds-DropAndPasteArea:is(:hover, .dragging) {
-  border-color: rgba(255, 255, 255, 0.32);
-  background: rgba(255, 255, 255, 0.05);
-  box-shadow: 0 0 18px 0 rgba(255, 255, 255, 0.10),
-              inset 0 0 22px 0 rgba(255, 255, 255, 0.05);
+/* Hover: federnd anheben, kraeftigerer Schatten, Neigung zur Maus (Variablen
+   setzt das Skript). Die kurze Uebergangsdauer fuer transform laesst die
+   Neigung der Maus folgen; beim Verlassen federt sie zurueck. */
+.DynamicBackgrounds-imageWrapper:hover {
+  translate: 0 -3px;
+  transform: perspective(700px) rotateX(var(--tilt-x, 0deg)) rotateY(var(--tilt-y, 0deg));
+  transition: outline-color 400ms cubic-bezier(0.4, 0, 0.2, 1),
+              box-shadow 300ms ease,
+              translate 360ms var(--dbm-ease-spring),
+              transform 140ms var(--dbm-ease-out);
+  box-shadow: 0 14px 28px rgba(0, 0, 0, 0.55);
+}
+.DynamicBackgrounds-imageWrapper.dragging {
+  opacity: 0.5;
+  transform: scale(0.95);
+}
+.DynamicBackgrounds-imageWrapper.drag-over {
+  outline-color: var(--green-430, #43b581);
+  transform: scale(1.02);
+}
+/* Das aktive Bild: Ring in der Akzentfarbe. Statisch, ohne Daueranimation. */
+.DynamicBackgrounds-imageWrapper.selected {
+  outline-color: var(--dbm-accent);
+  outline-offset: 2px;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3), 0 0 14px 1px color-mix(in srgb, var(--dbm-accent) 35%, transparent);
+}
+.DynamicBackgrounds-imageWrapper.selected:hover {
+  box-shadow: 0 14px 28px rgba(0, 0, 0, 0.55), 0 0 14px 1px color-mix(in srgb, var(--dbm-accent) 35%, transparent);
+}
+.DynamicBackgrounds-imageWrapper:focus-visible {
+  outline-color: #fff;
+  outline-offset: 2px;
 }
 
-/* Feine Lichtkante an der Oberkante des Fensters. Kein Glow im engeren Sinn,
-   aber genau das, was Glasoberflaechen hochwertig wirken laesst. */
-.DynamicBackgrounds-popoutInner {
-  position: relative;
+/* Knoepfe: bei Hover und bei Tastaturfokus auf der Kachel oder einem ihrer Knoepfe */
+.DynamicBackgrounds-imageWrapper:is(:hover, :focus-within) > .DynamicBackgrounds-favoriteButton,
+.DynamicBackgrounds-imageWrapper:is(:hover, :focus-within) > .DynamicBackgrounds-deleteButton,
+.DynamicBackgrounds-favoriteButton:focus-visible,
+.DynamicBackgrounds-deleteButton:focus-visible {
+  opacity: 1;
+}
+.DynamicBackgrounds-imageWrapper.confirming > .DynamicBackgrounds-favoriteButton,
+.DynamicBackgrounds-imageWrapper.confirming > .DynamicBackgrounds-deleteButton {
+  visibility: hidden;
+}
+.DynamicBackgrounds-favoriteButton:is(:hover, :focus-visible),
+.DynamicBackgrounds-deleteButton:is(:hover, :focus-visible) {
+  transform: scale(1.12);
+}
+.DynamicBackgrounds-favoriteButton:focus-visible,
+.DynamicBackgrounds-deleteButton:focus-visible {
+  outline: 2px solid #fff;
+  outline-offset: 1px;
+}
+.DynamicBackgrounds-deleteButton:is(:hover, :focus-visible) {
+  background-color: #d15353;
+}
+.DynamicBackgrounds-favoriteButton.active {
+  opacity: 1;
+  color: var(--dbm-accent);
+  background-color: rgba(8, 9, 18, 0.78);
+}
+.DynamicBackgrounds-favoriteButton:is(:hover, :focus-visible) {
+  background-color: rgba(8, 9, 18, 0.88);
+  color: var(--dbm-accent);
+}
+.DynamicBackgrounds-favoriteButton.active svg {
+  filter: drop-shadow(0 0 4px color-mix(in srgb, var(--dbm-accent) 70%, transparent));
 }
 
-.DynamicBackgrounds-popoutInner::before {
+/* Holo-Glanz: weicher Lichtfleck an der Mausposition plus schwacher
+   diagonaler Regenbogenschimmer, beide als Verlaeufe. Das Overlay existiert
+   nur beim Hover (content: none sonst), im Ruhezustand gibt es keine Ebene.
+   Ohne mix-blend-mode: geringe Deckkraft reicht. */
+.DynamicBackgrounds-imageWrapper:hover::after,
+.DynamicBackgrounds-categoryStack:hover .DynamicBackgrounds-stackFan::after {
   content: '';
   position: absolute;
-  inset: 0 0 auto 0;
-  z-index: 2;
-  height: 1px;
+  z-index: 4;
+  border-radius: inherit;
   pointer-events: none;
-  background: linear-gradient(90deg,
-    transparent 0%,
-    rgba(255, 255, 255, 0.16) 18%,
-    rgba(255, 255, 255, 0.16) 82%,
-    transparent 100%);
+  background:
+    radial-gradient(circle at var(--holo-x, 50%) var(--holo-y, 50%), rgba(255, 255, 255, 0.34), rgba(255, 255, 255, 0) 55%),
+    linear-gradient(115deg, rgba(255, 255, 255, 0) 18%, rgba(255, 90, 170, 0.16) 36%, rgba(255, 226, 90, 0.14) 45%, rgba(90, 235, 200, 0.16) 54%, rgba(120, 140, 255, 0.16) 63%, rgba(255, 255, 255, 0) 82%);
+  background-size: 100% 100%, 260% 260%;
+  background-position: 0 0, var(--holo-x, 50%) var(--holo-y, 50%);
+  animation: DynamicBackgrounds-holoIn 220ms ease-out;
 }
+.DynamicBackgrounds-imageWrapper:hover::after {
+  inset: 0;
+}
+/* Beim Stapel liegt das Overlay auf der vordersten Karte (190x120, 52px ueber dem Boden) */
+.DynamicBackgrounds-categoryStack:hover .DynamicBackgrounds-stackFan::after {
+  left: 50%;
+  bottom: 52px;
+  width: 190px;
+  height: 120px;
+  margin-left: -95px;
+  border-radius: 10px;
+  z-index: 600;
+}
+@keyframes DynamicBackgrounds-holoIn {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .DynamicBackgrounds-imageWrapper:hover { translate: none; }
+}
+
+
+/* ==========================================================================
+   OVERLAYS
+   ======================================================================== */
+
+/* Hinzufuegen-Kachel am Ende des Rasters. Gestrichelter Rand und Plus; beim
+   Ueberfahren wechseln beide auf die Akzentfarbe und die Kachel hebt sich. */
+.DynamicBackgrounds-gridWrapper > .DynamicBackgrounds-addTile {
+  display: block;
+  position: relative;
+  width: 100%;
+  border: 0;
+  background: none;
+  color: var(--dbm-text-muted);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+  border-radius: var(--dbm-radius-md);
+  transition: transform var(--dbm-dur) var(--dbm-ease-spring), color var(--dbm-dur-fast) ease;
+}
+.DynamicBackgrounds-gridWrapper > .DynamicBackgrounds-addTile:not(.stack) {
+  aspect-ratio: 16 / 9;
+  align-self: start;
+}
+.DynamicBackgrounds-addTile:hover { transform: translateY(-3px); color: var(--dbm-accent); }
+.DynamicBackgrounds-addFace {
+  display: grid;
+  place-items: center;
+  width: 100%;
+  height: 100%;
+  box-sizing: border-box;
+  border: 2px dashed rgba(255, 255, 255, 0.2);
+  border-radius: var(--dbm-radius-md);
+  transition: border-color var(--dbm-dur-fast) ease, background-color var(--dbm-dur-fast) ease;
+}
+.DynamicBackgrounds-addTile:hover .DynamicBackgrounds-addFace,
+.DynamicBackgrounds-categoryStack.is-empty:hover .DynamicBackgrounds-addFace {
+  border-color: var(--dbm-accent);
+  background: color-mix(in srgb, var(--dbm-accent) 8%, transparent);
+}
+/* In der Uebersicht hat die Kachel die Groesse eines Stapels: ein leerer
+   Umriss in Kartengroesse und dahinter zwei schwache Umrisse, die einen
+   Stapel andeuten. */
+.DynamicBackgrounds-addTile .DynamicBackgrounds-addFace.stack,
+.DynamicBackgrounds-categoryStack.is-empty .DynamicBackgrounds-addFace.stack {
+  position: absolute;
+  left: 50%;
+  bottom: 0;
+  width: 190px;
+  height: 120px;
+  transform: translateX(-50%);
+  overflow: visible;
+}
+.DynamicBackgrounds-addFace.stack::before,
+.DynamicBackgrounds-addFace.stack::after {
+  content: '';
+  position: absolute;
+  inset: -2px;
+  border: 2px dashed rgba(255, 255, 255, 0.1);
+  border-radius: var(--dbm-radius-md);
+  transition: border-color var(--dbm-dur-fast) ease;
+  pointer-events: none;
+}
+.DynamicBackgrounds-addFace.stack::before { transform: translate(-11px, -26px) rotate(-2.6deg); }
+.DynamicBackgrounds-addFace.stack::after { transform: translate(-22px, -52px) rotate(-5.2deg); opacity: 0.6; }
+.DynamicBackgrounds-addTile:hover .DynamicBackgrounds-addFace.stack::before,
+.DynamicBackgrounds-addTile:hover .DynamicBackgrounds-addFace.stack::after,
+.DynamicBackgrounds-categoryStack.is-empty:hover .DynamicBackgrounds-addFace.stack::before,
+.DynamicBackgrounds-categoryStack.is-empty:hover .DynamicBackgrounds-addFace.stack::after {
+  border-color: color-mix(in srgb, var(--dbm-accent) 55%, transparent);
+}
+.DynamicBackgrounds-addTile .DynamicBackgrounds-categoryName { color: inherit; }
+/* Der Glanz der Stapel liegt auf Karten; ein leerer Stapel hat keine. */
+.DynamicBackgrounds-categoryStack.is-empty .DynamicBackgrounds-stackFan::after { display: none; }
+
+/* Leere Sammlung und leere Kategorie: eine Ansicht ueber die ganze
+   Rasterbreite. Die drei Umrisse haben die Form der Stapelkarten; im Ruhezustand
+   steht alles still, beim Ueberfahren faechern sie sich auf. */
+.DynamicBackgrounds-gridWrapper > .DynamicBackgrounds-empty {
+  grid-column: 1 / -1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  padding: 18px 0 6px;
+  text-align: center;
+  min-height: 0;
+}
+.DynamicBackgrounds-emptyCards {
+  position: relative;
+  width: 190px;
+  height: 132px;
+  margin-bottom: 16px;
+}
+.DynamicBackgrounds-emptyCards > span {
+  position: absolute;
+  inset: 6px 0 0;
+  border: 2px dashed rgba(255, 255, 255, 0.18);
+  border-radius: var(--dbm-radius-md);
+  background: color-mix(in srgb, var(--dbm-accent) 4%, transparent);
+  transition: transform 520ms var(--dbm-ease-spring), border-color var(--dbm-dur-fast) ease;
+}
+.DynamicBackgrounds-emptyCards > span:nth-child(1) { transform: translate(-22px, -8px) rotate(-8deg); opacity: 0.55; }
+.DynamicBackgrounds-emptyCards > span:nth-child(2) { transform: translate(-11px, -4px) rotate(-4deg); opacity: 0.8; }
+.DynamicBackgrounds-empty:hover .DynamicBackgrounds-emptyCards > span:nth-child(1) { transform: translate(-38px, -10px) rotate(-12deg); }
+.DynamicBackgrounds-empty:hover .DynamicBackgrounds-emptyCards > span:nth-child(2) { transform: translate(-19px, -5px) rotate(-6deg); }
+.DynamicBackgrounds-empty:hover .DynamicBackgrounds-emptyCards > span:nth-child(3) { border-color: color-mix(in srgb, var(--dbm-accent) 60%, transparent); }
+.DynamicBackgrounds-emptyTitle {
+  color: var(--dbm-text);
+  font-size: 17px;
+  font-weight: 800;
+}
+.DynamicBackgrounds-emptyHint {
+  max-width: 420px;
+  color: var(--dbm-text-muted);
+  font-size: 13px;
+  line-height: 1.4;
+}
+.DynamicBackgrounds-emptyButton {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 12px;
+  padding: 8px 18px 8px 14px;
+  border: 0;
+  border-radius: var(--dbm-radius-full);
+  background: var(--dbm-accent);
+  color: var(--dbm-on-accent);
+  font: inherit;
+  font-size: 13px;
+  font-weight: 700;
+  cursor: pointer;
+  transition: transform var(--dbm-dur-fast) var(--dbm-ease-spring);
+}
+.DynamicBackgrounds-emptyButton:hover { transform: translateY(-2px) scale(1.04); }
+.DynamicBackgrounds-emptyButton:active { transform: scale(0.97); }
+.DynamicBackgrounds-emptyButton:focus-visible {
+  outline: 2px solid var(--dbm-text);
+  outline-offset: 2px;
+}
+
+/* Abdeckung beim Ziehen von Dateien ueber den Manager. Sie liegt im Fluss
+   unsichtbar, faengt aber nur Ereignisse, solange sie an ist. */
+.DynamicBackgrounds-popoutInner .DynamicBackgrounds-content { position: relative; }
+.DynamicBackgrounds-dropOverlay {
+  position: absolute;
+  inset: 0 -10px -18px -10px;
+  z-index: 40;
+  display: grid;
+  place-items: center;
+  border-radius: 0 0 var(--dbm-radius-lg) var(--dbm-radius-lg);
+  background: rgba(6, 7, 12, 0.88);
+  opacity: 0;
+  visibility: hidden;
+  pointer-events: none;
+  transition: opacity 260ms var(--dbm-ease-out), visibility 0s 260ms;
+}
+.DynamicBackgrounds-dropOverlay.on {
+  opacity: 1;
+  visibility: visible;
+  pointer-events: auto;
+  transition: opacity 200ms var(--dbm-ease-out), visibility 0s;
+}
+.DynamicBackgrounds-dropFrame {
+  position: absolute;
+  inset: 16px 22px 24px 22px;
+  width: calc(100% - 44px);
+  height: calc(100% - 40px);
+  overflow: visible;
+}
+.DynamicBackgrounds-dropFrame rect {
+  width: calc(100% - 3px);
+  height: calc(100% - 3px);
+  fill: color-mix(in srgb, var(--dbm-accent) 7%, transparent);
+  stroke: var(--dbm-accent);
+  stroke-width: 3;
+  stroke-linecap: round;
+  stroke-dasharray: 12 12;
+}
+.DynamicBackgrounds-dropOverlay.on .DynamicBackgrounds-dropFrame rect {
+  animation: DynamicBackgrounds-dropDash 1.2s linear infinite;
+}
+@keyframes DynamicBackgrounds-dropDash {
+  to { stroke-dashoffset: -24; }
+}
+.DynamicBackgrounds-dropMsg {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+  color: var(--dbm-text);
+}
+.DynamicBackgrounds-dropPlus { color: var(--dbm-accent); }
+.DynamicBackgrounds-dropOverlay.on .DynamicBackgrounds-dropPlus {
+  animation: DynamicBackgrounds-dropPop 520ms var(--dbm-ease-spring) both;
+}
+@keyframes DynamicBackgrounds-dropPop {
+  from { transform: scale(0.4); opacity: 0; }
+  to { transform: scale(1); opacity: 1; }
+}
+.DynamicBackgrounds-dropText {
+  font-size: 18px;
+  font-weight: 800;
+  max-width: 420px;
+  text-align: center;
+  overflow-wrap: anywhere;
+}
+
+.DynamicBackgrounds-popoutWrap:focus { outline: none; }
+
+@media (prefers-reduced-motion: reduce) {
+  .DynamicBackgrounds-stackFan { transform: none !important; transition: none !important; }
+  .DynamicBackgrounds-stackFan::before { transform: none; transition: opacity 120ms linear; }
+  .DynamicBackgrounds-seg .DynamicBackgrounds-segThumb,
+  .DynamicBackgrounds-barBtn,
+  .DynamicBackgrounds-addTile,
+  .DynamicBackgrounds-emptyCards > span,
+  .DynamicBackgrounds-emptyButton,
+  .DynamicBackgrounds-imageData { transition: none; }
+  .DynamicBackgrounds-imageSkeleton::after { animation: none; }
+  .DynamicBackgrounds-quickMenu,
+  .DynamicBackgrounds-dropOverlay.on .DynamicBackgrounds-dropFrame rect,
+  .DynamicBackgrounds-dropOverlay.on .DynamicBackgrounds-dropPlus { animation: none; }
+}
+
+/* Export: Ansicht ueber dem ganzen Manager, in der Grundflaeche des Managers.
+   Der Akzent steht nur auf dem Hauptknopf und dem Fortschrittsbalken. */
+.DynamicBackgrounds-exportOverlay {
+  position: absolute;
+  inset: 0;
+  z-index: 100;
+  display: grid;
+  grid-template-rows: auto 1fr;
+  overflow: hidden;
+  border-radius: var(--dbm-radius-lg);
+  background: var(--dbm-surface);
+  color: var(--dbm-text);
+}
+.DynamicBackgrounds-exportHead {
+  position: relative;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+  padding: 14px 20px;
+  background: var(--dbm-surface-raised);
+  border-bottom: 1px solid var(--dbm-line);
+}
+.DynamicBackgrounds-exportTitle {
+  margin: 0;
+  color: var(--dbm-text);
+  font-size: 17px;
+  font-weight: 800;
+}
+.DynamicBackgrounds-exportActions {
+  display: flex;
+  gap: 8px;
+}
+.DynamicBackgrounds-exportButton {
+  border: 0;
+  border-radius: var(--dbm-radius-full);
+  padding: 7px 16px;
+  background: var(--dbm-surface-hover);
+  color: var(--dbm-text);
+  font: inherit;
+  font-size: 13px;
+  font-weight: 700;
+  cursor: pointer;
+  transition: transform var(--dbm-dur-fast) var(--dbm-ease-spring), background-color var(--dbm-dur-fast) ease, opacity var(--dbm-dur-fast) ease;
+}
+.DynamicBackgrounds-exportButton:hover { transform: translateY(-1px) scale(1.03); }
+.DynamicBackgrounds-exportButton:active { transform: scale(0.97); }
+.DynamicBackgrounds-exportButton:focus-visible {
+  outline: 2px solid var(--dbm-text);
+  outline-offset: 2px;
+}
+.DynamicBackgrounds-exportButton:disabled { opacity: 0.6; cursor: default; transform: none; }
+.DynamicBackgrounds-exportButton.primary {
+  background: var(--dbm-accent);
+  color: var(--dbm-on-accent);
+}
+/* Fortschritt: die Fuellung wird per transform gestreckt, das laeuft auf der
+   Grafikkarte und gleitet zwischen den Schritten. */
+.DynamicBackgrounds-exportProgress {
+  position: absolute;
+  inset: auto 0 -1px;
+  height: 3px;
+  overflow: hidden;
+  background: var(--dbm-line);
+}
+.DynamicBackgrounds-exportProgressFill {
+  height: 100%;
+  background: var(--dbm-accent);
+  transform-origin: left center;
+  transition: transform 320ms var(--dbm-ease-out);
+}
+.DynamicBackgrounds-exportGrid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
+  gap: 12px;
+  padding: 20px;
+  overflow-y: auto;
+  align-content: start;
+}
+.DynamicBackgrounds-exportCard {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  background: var(--dbm-surface-raised);
+  border-radius: var(--dbm-radius-md);
+  padding: 10px;
+  border: 1px solid var(--dbm-line);
+}
+.DynamicBackgrounds-exportThumb {
+  width: 100%;
+  height: 100px;
+  object-fit: cover;
+  border-radius: calc(var(--dbm-radius-md) - 4px);
+  margin-bottom: 8px;
+}
+.DynamicBackgrounds-exportName {
+  font-size: 12px;
+  text-align: center;
+  margin-bottom: 8px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 100%;
+  color: var(--dbm-text-muted);
+}
+.DynamicBackgrounds-exportCard .DynamicBackgrounds-exportButton {
+  padding: 5px 12px;
+  font-size: 12px;
+  width: 100%;
+}
+
+/* ==========================================================================
+   EINSTELLUNGEN (Einstellungsseite und Menue am Zahnrad)
+   ======================================================================== */
 
 .DynamicBackgrounds-ResetButton {
   flex: 0 0 auto;
@@ -3113,14 +5340,14 @@ module.exports = meta => {
   line-height: 1;
   cursor: pointer;
   border: none;
-  border-radius: 4px;
+  border-radius: var(--dbm-radius-full);
   background: transparent;
-  color: var(--interactive-normal, rgba(255,255,255,0.55));
+  color: var(--dbm-text-muted);
   transition: color 120ms ease, background-color 120ms ease;
 }
 .DynamicBackgrounds-ResetButton:hover {
-  color: var(--interactive-active, #fff);
-  background: var(--background-modifier-hover, rgba(255,255,255,0.08));
+  color: var(--dbm-accent);
+  background: color-mix(in srgb, var(--dbm-accent) 14%, transparent);
 }
 .DynamicBackgrounds-ResetButton:disabled {
   opacity: 0.4;
@@ -3129,6 +5356,230 @@ module.exports = meta => {
 .DynamicBackgrounds-NumberInput::-webkit-scrollbar {
   display: none;
 }
+.DynamicBackgrounds-FormSwitch {
+  display: grid;
+  grid-template-columns: 1fr auto auto auto;
+  align-items: center;
+  gap: 4px 16px;
+  margin-bottom: 20px;
+  & label {
+    display: contents;
+    cursor: pointer;
+  }
+  &:has([disabled]) {
+    opacity: 0.5;
+    pointer-events: none;
+  }
+}
+.DynamicBackgrounds-FormNumberInput {
+  display: grid;
+  grid-template-columns: 1fr 100px auto;
+  align-items: center;
+  gap: 4px;
+  margin-bottom: 20px;
+  &:has([disabled]) {
+    opacity: 0.5;
+  }
+}
+.DynamicBackgrounds-FormSelect {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  align-items: center;
+  gap: 4px 16px;
+  margin-bottom: 20px;
+  &:has([disabled]) {
+    opacity: 0.5;
+    pointer-events: none;
+  }
+}
+.DynamicBackgrounds-Select {
+  padding: 8px 12px;
+  border-radius: var(--dbm-radius-md);
+  background-color: var(--dbm-surface-raised);
+  color: var(--dbm-text);
+  border: none;
+  cursor: pointer;
+  font-size: 14px;
+  min-width: 150px;
+  appearance: none;
+  -webkit-appearance: none;
+  background-image: linear-gradient(45deg, transparent 50%, currentColor 50%), linear-gradient(135deg, currentColor 50%, transparent 50%);
+  background-position: calc(100% - 18px) calc(1em + 2px), calc(100% - 13px) calc(1em + 2px);
+  background-size: 5px 5px, 5px 5px;
+  background-repeat: no-repeat;
+}
+.DynamicBackgrounds-Select:hover {
+  background-color: var(--dbm-surface-hover);
+}
+.DynamicBackgrounds-Select:focus-visible {
+  outline: 2px solid var(--dbm-accent);
+}
+.DynamicBackgrounds-Select option {
+  background-color: var(--dbm-surface-raised) !important;
+  color: var(--dbm-text) !important;
+}
+.DynamicBackgrounds-NumberInput {
+  white-space: nowrap;
+  padding-block: 0.25rem;
+  text-align: right;
+}
+
+/* Ersatz fuer Discords Eingabefeld und Regler, falls dessen Modul fehlt. Die
+   Selektoren sind mit dem Elementnamen verstaerkt, damit sie gegen
+   .DynamicBackgrounds-NumberInput und Discords Klassen gewinnen. */
+input.DynamicBackgrounds-fallbackInput {
+  background: var(--dbm-surface);
+  color: var(--dbm-text);
+  border: 1px solid var(--dbm-line);
+  border-radius: var(--dbm-radius-md);
+  padding: 2px 8px;
+  box-sizing: border-box;
+}
+input.DynamicBackgrounds-fallbackInput:focus-visible {
+  outline: 2px solid var(--dbm-accent);
+  outline-offset: -1px;
+}
+input.DynamicBackgrounds-fallbackInput.compact {
+  width: 4rem;
+  text-align: right;
+  font-size: 14px;
+}
+input.DynamicBackgrounds-fallbackSlider {
+  width: 100%;
+  accent-color: var(--dbm-accent);
+}
+
+/* Aktive Schalter in der Einstellungsseite in der Akzentfarbe. */
+.DynamicBackgrounds-settings .bd-switch.bd-switch-checked .bd-switch-body {
+  background-color: var(--dbm-accent);
+}
+.DynamicBackgrounds-settings .bd-switch.bd-switch-checked .bd-switch-handle {
+  fill: var(--dbm-on-accent);
+}
+
+.DynamicBackgrounds-FormNote { color: var(--dbm-text-muted); }
+.DynamicBackgrounds-settingsSeparator { margin-bottom: 1rem; }
+.DynamicBackgrounds-settingsFooter { display: flex; justify-content: flex-end; }
+
+/* Kategorie-Filter der Diashow */
+.DynamicBackgrounds-filterGroup { margin-bottom: 0.75rem; }
+.DynamicBackgrounds-filterLabel { margin-bottom: 6px; }
+.DynamicBackgrounds-filterChips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.DynamicBackgrounds-filterChip {
+  padding: 5px 12px;
+  border: 1px solid var(--dbm-line);
+  border-radius: var(--dbm-radius-full);
+  background: var(--dbm-surface-raised);
+  color: var(--dbm-text-muted);
+  font: inherit;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background-color var(--dbm-dur-fast) ease, color var(--dbm-dur-fast) ease, border-color var(--dbm-dur-fast) ease;
+}
+.DynamicBackgrounds-filterChip:hover {
+  background: var(--dbm-surface-hover);
+  color: var(--dbm-text);
+}
+.DynamicBackgrounds-filterChip.active {
+  background: var(--dbm-accent);
+  border-color: transparent;
+  color: var(--dbm-on-accent);
+}
+.DynamicBackgrounds-filterChip:focus-visible {
+  outline: 2px solid var(--dbm-accent);
+  outline-offset: 2px;
+}
+
+/* Zeile mit Regler im Menue am Zahnrad. */
+.DynamicBackgrounds-menuRow.DynamicBackgrounds-menuRow {
+  display: grid;
+  gap: 0.5rem;
+  max-width: 16rem;
+}
+.DynamicBackgrounds-menuRowHead {
+  display: flex;
+  gap: 0.25rem;
+  align-items: center;
+}
+.DynamicBackgrounds-menuRow .DynamicBackgrounds-menuRowLabel {
+  margin-right: auto;
+  padding-right: 0.75rem;
+  cursor: inherit;
+  flex: 1 0 calc(55% - .5rem);
+}
+
+/* ==========================================================================
+   BEWEGUNG
+   ======================================================================== */
+
+@keyframes fade-in {
+  0% { opacity: 0; }
+  100% { opacity: 1; }
+}
+
+/* Die Karte, die von vorn nach hinten wandert.
+   Eine normale transition kann nur GERADLINIG zwischen zwei Punkten
+   interpolieren - damit gibt es kein Anheben und kein Herumfuehren. Deshalb
+   hier echte Keyframes mit Zwischenstationen. Die Start- und Zielkoordinaten
+   kommen per CSS-Variable aus dem JSX, weil sie von der Stapelgroesse
+   abhaengen.
+
+     0%   vorn oben, volle Deckkraft
+     34%  angehoben, noch vorne  -> "Karte aus dem Faecher nehmen"
+     66%  hinten angekommen, etwas zu tief; 82% leicht darueber (Nachfedern)
+     100% unten eingereiht, blendet aus
+
+   Ausgeblendet wird erst ab 82%, damit der Weg wirklich sichtbar ist. */
+@keyframes DynamicBackgrounds-cardToBack {
+  0% {
+    transform: translate3d(calc(-50% + var(--bm-x-from)), var(--bm-y-from), 0) rotate(0deg) scale(1);
+    opacity: 1;
+    z-index: 400;
+    animation-timing-function: cubic-bezier(0.16, 0.9, 0.3, 1);
+  }
+  34% {
+    /* Angehoben und noch VORN. Der z-index bleibt bis hierher oben: faellt er
+       schon bei 0%, liegt die Karte sofort hinter allen anderen, das zweite
+       Bild springt frei und es sieht aus, als wuerde die Karte aus der Mitte
+       hochgezogen. */
+    transform: translate3d(calc(-50% + var(--bm-x-from) + 16px), calc(var(--bm-y-from) - 74px), 0) rotate(6deg) scale(1.07);
+    opacity: 1;
+    z-index: 400;
+    animation-timing-function: cubic-bezier(0.55, 0, 0.35, 1);
+  }
+  36% {
+    /* Erst jetzt hinter den Stapel; die Karte schwebt hier schon ueber den anderen. */
+    z-index: 1;
+  }
+  66% {
+    /* Hinten angekommen, ein Stueck zu tief: das Nachfedern beginnt */
+    transform: translate3d(calc(-50% + var(--bm-x-to)), calc(var(--bm-y-to) + 9px), 0) rotate(calc(var(--bm-rot-to, 0deg) - 1.5deg)) scale(0.96);
+    opacity: 1;
+    animation-timing-function: ease-out;
+  }
+  82% {
+    transform: translate3d(calc(-50% + var(--bm-x-to)), calc(var(--bm-y-to) - 4px), 0) rotate(calc(var(--bm-rot-to, 0deg) + 0.6deg)) scale(1.01);
+    opacity: 1;
+    animation-timing-function: ease-in-out;
+  }
+  100% {
+    transform: translate3d(calc(-50% + var(--bm-x-to)), var(--bm-y-to), 0) rotate(var(--bm-rot-to, 0deg)) scale(1);
+    /* 0 wenn die Karte aus dem Fenster faellt, 1 wenn sie sichtbar unten
+       wieder einreiht (Kategorien mit hoechstens 5 Bildern). */
+    opacity: var(--bm-op-end, 0);
+    z-index: 1;
+  }
+}
+
+/* ==========================================================================
+   HINTERGRUNDEBENE DES PLUGINS (nicht Teil des Managers)
+   ======================================================================== */
+
 /* overflow: hidden beschneidet die Hintergrundebene aufs Fenster.
 
    Die Dauereffekte vergroessern den Container per transform: scale (1.02 bis
@@ -3406,599 +5857,6 @@ module.exports = meta => {
 @media (prefers-reduced-motion: reduce) {
   .DynamicBackgrounds-bgContainer[data-ambient] { animation: none !important; }
   .DynamicBackgrounds-bgContainer[data-ambient]::before { animation: none !important; }
-}
-
-@keyframes fade-in {
-  0% { opacity: 0; }
-  100% { opacity: 1; }
-}
-.DynamicBackgrounds-FormSwitch {
-  display: grid;
-  grid-template-columns: 1fr auto auto auto;
-  align-items: center;
-  gap: 4px 16px;
-  margin-bottom: 20px;
-  & label {
-    display: contents;
-    cursor: pointer;
-  }
-  &:has([disabled]) {
-    opacity: 0.5;
-    pointer-events: none;
-  }
-}
-.DynamicBackgrounds-FormNumberInput {
-  display: grid;
-  grid-template-columns: 1fr 100px auto;
-  align-items: center;
-  gap: 4px;
-  margin-bottom: 20px;
-  &:has([disabled]) {
-    opacity: 0.5;
-  }
-}
-.DynamicBackgrounds-FormSelect {
-  display: grid;
-  grid-template-columns: 1fr auto;
-  align-items: center;
-  gap: 4px 16px;
-  margin-bottom: 20px;
-  &:has([disabled]) {
-    opacity: 0.5;
-    pointer-events: none;
-  }
-}
-.DynamicBackgrounds-Select {
-  padding: 8px 12px;
-  border-radius: 4px;
-  background-color: #2b2d31;
-  color: var(--text-normal, #dcddde);
-  border: none;
-  cursor: pointer;
-  font-size: 14px;
-  min-width: 150px;
-  appearance: none;
-  -webkit-appearance: none;
-  background-image: linear-gradient(45deg, transparent 50%, currentColor 50%), linear-gradient(135deg, currentColor 50%, transparent 50%);
-  background-position: calc(100% - 18px) calc(1em + 2px), calc(100% - 13px) calc(1em + 2px);
-  background-size: 5px 5px, 5px 5px;
-  background-repeat: no-repeat;
-}
-.DynamicBackgrounds-Select:hover {
-  background-color: #1e1f22;
-}
-.DynamicBackgrounds-Select:focus {
-  outline: 2px solid var(--focus-primary, #00aff4);
-}
-.DynamicBackgrounds-Select option {
-  background-color: #2b2d31 !important;
-  color: var(--text-normal, #dcddde) !important;
-}
-.DynamicBackgrounds-head { display: flex; align-items: center; gap: 8px; }
-.DynamicBackgrounds-head h1 { flex: 1; margin: 0; }
-.DynamicBackgrounds-head .DynamicBackgrounds-SettingsButton { margin-left: auto; }
-.DynamicBackgrounds-quickRow .DynamicBackgrounds-SettingsButton { margin-left: auto; }
-.DynamicBackgrounds-NumberInput {
-  white-space: nowrap;
-  padding-block: 0.25rem;
-  text-align: right;
-}
-.DynamicBackgrounds-inputWrapper {
-  display: grid;
-  grid-template-columns: 1fr auto auto auto;
-  padding: 0.5rem 0.75rem 0.5rem 0.25rem;
-  gap: 0.5rem;
-  align-items: center;
-}
-.DynamicBackgrounds-DropAndPasteArea {
-  position: relative;
-  display: grid;
-  align-items: center;
-  justify-items: center;
-  gap: 8px;
-  /* Schmale Leiste: auffindbar, ohne den Kategorien den Platz zu nehmen. */
-  min-height: 62px;
-  padding: 10px;
-  border-radius: 10px;
-  border: 1px dashed rgba(255,255,255,0.12);
-  background: rgba(255,255,255,0.02);
-  transition: border-color 160ms ease, background-color 160ms ease, box-shadow 160ms ease;
-  outline: none;
-  grid-row: span 3;
-  caret-color: transparent;
-  background-repeat: no-repeat;
-  background-position: center 18px;
-}
-.DynamicBackgrounds-DropAndPasteArea:is(:focus, .dragging, :focus-visible)::before {
-  opacity: 1;
-}
-  .DynamicBackgrounds-DropAndPasteArea::before {
-  content: 'Drop image here or click to upload';
-  position: absolute;
-  display: grid;
-  place-items: center;
-  inset: 0;
-  opacity: 0.95;
-  padding: 12px;
-  border-radius: inherit;
-  cursor: copy;
-  font-size: 0.85rem;
-  line-height: 1.3;
-  white-space: pre-wrap;
-  text-align: center;
-  color: rgba(255,255,255,0.62);
-  pointer-events: none;
-  background: transparent;
-  transition: transform 180ms ease, opacity 160ms ease;
-}
-.DynamicBackgrounds-DropAndPasteArea:hover::before { transform: translateY(-2px); }
-.DynamicBackgrounds-DropAndPasteArea .drag-icon { display: none; }
-@media (max-width: 700px) {
-  .DynamicBackgrounds-DropAndPasteArea { min-height: 56px; padding: 8px; }
-  .DynamicBackgrounds-DropAndPasteArea::before { font-size: 0.8rem; }
-}
-.DynamicBackgrounds-UploadButton {color: var(--green-430); }
-.DynamicBackgrounds-UploadButton:is(:hover, :focus-visible) { color: var(--green-500); }
-.DynamicBackgrounds-UploadButton:active { color: var(--green-530); }
-.DynamicBackgrounds-SettingsButton { color: rgba(255,255,255,0.92); }
-.DynamicBackgrounds-SettingsButton:is(:hover, :focus-visible) { color: rgba(255,255,255,0.98); }
-.DynamicBackgrounds-SettingsButton:active { color: rgba(255,255,255,1); }
-.DynamicBackgrounds-RemoveBgButton { color: var(--red-430); }
-.DynamicBackgrounds-RemoveBgButton:is(:hover, :focus-visible) { color: var(--red-500); }
-.DynamicBackgrounds-RemoveBgButton:active { color: var(--red-530); }
-
-.DynamicBackgrounds-UploadButton,
-.DynamicBackgrounds-SettingsButton,
-.DynamicBackgrounds-nextButton,
-.DynamicBackgrounds-RemoveBgButton {
-  display: grid;
-  place-items: center;
-  padding: 0.25rem;
-  background-color: #0000;
-  aspect-ratio: 1;
-  border-radius: 0.25rem;
-  transition: color 200ms cubic-bezier(0.4, 0, 0.2, 1);
-}
-.DynamicBackgrounds-imageWrapper {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  position: relative;
-  border-radius: .25rem;
-  background-color: #0000;
-  flex: 0 0 calc(50% - 0.25rem);
-  aspect-ratio: 16 / 9;
-  outline: 2px solid transparent;
-  padding: 0;
-  overflow: hidden;
-  transition: outline-color 400ms cubic-bezier(0.4, 0, 0.2, 1), transform 200ms ease;
-  cursor: grab;
-}
-.DynamicBackgrounds-imageWrapper:active {
-  cursor: grabbing;
-}
-.DynamicBackgrounds-imageWrapper.dragging {
-  opacity: 0.5;
-  transform: scale(0.95);
-}
-.DynamicBackgrounds-imageWrapper.drag-over {
-  outline-color: var(--green-430, #43b581);
-  transform: scale(1.02);
-}
-/* Das aktive Bild. Weiss und niedrig deckend statt farbig, damit es ueber
-   jedem Motiv funktioniert. */
-.DynamicBackgrounds-imageWrapper.selected {
-  outline-color: rgba(255, 255, 255, 0.55);
-  box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.25),
-              0 0 14px 2px rgba(255, 255, 255, 0.16);
-}
-
-/* Feine Lichtkante beim Ueberfahren. Kein farbiger Schein, sondern Licht,
-   das auf eine Kante faellt - das ist der Unterschied zwischen hochwertig
-   und Neon. */
-.DynamicBackgrounds-imageWrapper:hover {
-  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.18),
-              0 0 10px 0 rgba(255, 255, 255, 0.10);
-}
-
-/* Der Favoriten-Stern glueht warm, wenn er gesetzt ist. Nur auf dem Symbol,
-   nicht auf der Flaeche. */
-.DynamicBackgrounds-favoriteButton.active svg {
-  filter: drop-shadow(0 0 4px rgba(255, 193, 7, 0.75));
-}
-.DynamicBackgrounds-image {
-  object-fit: cover;
-  min-height: 100%;
-  min-width: 100%;
-  animation: fade-in 250ms cubic-bezier(0.4, 0, 0.2, 1);
-}
-.DynamicBackgrounds-imageWrapper:hover > .DynamicBackgrounds-deleteButton,
-.DynamicBackgrounds-deleteButton:focus-visible {
-  opacity: 1;
-}
-.DynamicBackgrounds-imageData {
-  position: absolute;
-  inset: auto 0 0;
-  display: flex;
-  justify-content: space-between;
-  padding: 0.25rem 0.25rem 0;
-  font-size: .75rem;
-  color: rgba(255, 255, 255, 0.6667);
-  background: linear-gradient(#0000, rgba(25, 25, 25, 0.8) .175rem) no-repeat;
-}
-.DynamicBackgrounds-imageData::before {
-  content: 'SIZE: 'attr(data-size)'';
-}
-.DynamicBackgrounds-imageData[data-dimensions]::after {
-  content: attr(data-dimensions);
-}
-.DynamicBackgrounds-imageWrapper:is(:hover, :focus-visible, :focus-within) .DynamicBackgrounds-imageData[data-mime]::after,
-.DynamicBackgrounds-imageData[data-mime]:not([data-dimensions])::after {
-  content: attr(data-mime);
-  font-family: 'gg mono';
-}
-.DynamicBackgrounds-favoriteButton {
-  display: flex;
-  position: absolute;
-  inset: 3px auto auto 3px;
-  border-radius: 4px;
-  border: 0;
-  padding: 1px;
-  background-color: rgba(0, 0, 0, 0.5);
-  opacity: 0;
-  color: #fff;
-  transition: background-color 150ms cubic-bezier(0.4, 0, 0.2, 1), opacity 250ms cubic-bezier(0.4, 0, 0.2, 1), color 150ms ease;
-}
-.DynamicBackgrounds-favoriteButton.active {
-  opacity: 1;
-  color: #ffc107;
-  background-color: rgba(0, 0, 0, 0.7);
-}
-.DynamicBackgrounds-favoriteButton:is(:hover, :focus-visible) {
-  background-color: rgba(0, 0, 0, 0.8);
-  color: #ffc107;
-}
-.DynamicBackgrounds-imageWrapper:hover > .DynamicBackgrounds-favoriteButton {
-  opacity: 1;
-}
-.DynamicBackgrounds-deleteButton {
-  display: flex;
-  position: absolute;
-  inset: 3px 3px auto auto;
-  border-radius: 4px;
-  border: 0;
-  padding: 1px;
-  background-color: #c62828;
-  opacity: 0;
-  color: #fff;
-  transition: background-color 150ms cubic-bezier(0.4, 0, 0.2, 1), opacity 250ms cubic-bezier(0.4, 0, 0.2, 1);
-}
-.DynamicBackgrounds-deleteButton:is(:hover, :focus-visible) {
-  background-color: #d15353; 
-}
-.DynamicBackgrounds-quickButtons {
-  display: flex;
-  gap: 4px;
-  padding: 8px;
-  justify-content: flex-start;
-}
-.DynamicBackgrounds-quickButton {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  width: 32px;
-  height: 32px;
-  border: none;
-  border-radius: 4px;
-  background: var(--background-modifier-hover);
-  color: var(--interactive-normal);
-  cursor: pointer;
-  transition: color 150ms ease, background-color 150ms ease;
-}
-.DynamicBackgrounds-quickButton:hover {
-  background-color: var(--background-modifier-active);
-  color: var(--interactive-hover);
-}
-.DynamicBackgrounds-quickButton.active {
-  color: #ffc107;
-  background-color: var(--background-modifier-selected);
-}
-.DynamicBackgrounds-categoryBar {
-  display: flex;
-  gap: 8px;
-  padding: 8px 12px;
-  align-items: center;
-}
-.DynamicBackgrounds-categorySelect {
-  flex: 1;
-  padding: 6px 10px;
-  border-radius: 4px;
-  border: none;
-  background: var(--background-modifier-accent);
-  color: var(--text-normal);
-  font-size: 14px;
-  cursor: pointer;
-  outline: none;
-}
-.DynamicBackgrounds-categorySelect:hover {
-  background: var(--background-modifier-hover);
-}
-.DynamicBackgrounds-categorySelect:focus {
-  box-shadow: 0 0 0 2px var(--focus-primary);
-}
-.DynamicBackgrounds-categoryButton {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  width: 28px;
-  height: 28px;
-  border: none;
-  border-radius: 4px;
-  background: var(--background-modifier-accent);
-  color: var(--text-normal);
-  font-size: 18px;
-  cursor: pointer;
-  transition: background-color 150ms ease;
-}
-.DynamicBackgrounds-categoryButton:hover {
-  background: var(--background-modifier-hover);
-}
-.DynamicBackgrounds-categoryButton.delete {
-  background: #c62828;
-  color: #fff;
-}
-.DynamicBackgrounds-categoryButton.delete:hover {
-  background: #d15353;
-}
-.DynamicBackgrounds-categoryInputRow {
-  display: flex;
-  gap: 8px;
-  padding: 0 12px 8px;
-}
-.DynamicBackgrounds-categoryInput {
-  flex: 1;
-  padding: 6px 10px;
-  border-radius: 4px;
-  border: none;
-  background: var(--background-modifier-accent);
-  color: var(--text-normal);
-  font-size: 14px;
-  outline: none;
-}
-.DynamicBackgrounds-categoryInput:focus {
-  box-shadow: 0 0 0 2px var(--focus-primary);
-}
-.DynamicBackgrounds-gridWrapper {
-  display: flex;
-  flex-wrap: wrap;
-  gap: .5rem;
-  overflow: auto;
-  padding: 0.5rem 0.25rem;
-  margin-bottom: 0.5rem;
-  align-content: start;
-  scrollbar-gutter: stable;
-  mask-image: linear-gradient(#0000, #000 0.5rem, #000 calc(100% - 0.5rem), #0000 100%), linear-gradient(to left, #000 0.75rem, #0000 0.75rem);
-}
-
-.DynamicBackgrounds-popoutWrap {
-  display: flex;
-  align-items: flex-start;
-  /* align to the right to match the Popout's align:'right' anchoring instead of centering,
-     which was fighting the actual anchor position and causing the backdrop to render off to one side */
-  justify-content: flex-end;
-  padding: 12px 12px 8px 12px;
-  /* Only the visible card (.DynamicBackgrounds-popoutInner) should catch clicks. The wrap itself
-     can end up overlapping the toolbar icon above it; making it click-through here means the icon
-     stays clickable (to close the popout) even where the wrap's invisible bounding box covers it. */
-  pointer-events: none;
-  background: none;
-  box-shadow: none;
-}
-/* Safety net: Discord's own messagesPopoutWrap-xxxx class (still applied alongside ours for
-   positioning/behavior compatibility) may carry its own background/shadow/backdrop-filter that
-   would otherwise show through unpredictably. Force it off so only our own card renders visually. */
-.DynamicBackgrounds-popoutWrap[class*="messagesPopoutWrap"] {
-  background: none !important;
-  box-shadow: none !important;
-  backdrop-filter: none !important;
-}
-.DynamicBackgrounds-popoutInner {
-  width: min(760px, 92vw);
-  max-height: min(calc(100vh - 96px), 80vh);
-  background: rgba(18,18,18,0.78);
-  backdrop-filter: blur(10px) saturate(1.05);
-  border-radius: 12px;
-  padding: 10px 10px 18px 10px;
-  box-shadow: 0 18px 52px rgba(0,0,0,0.68);
-  overflow: visible; /* popout itself stays fixed; gallery will scroll */
-  display: flex;
-  flex-direction: column;
-  pointer-events: auto;
-}
-
-.DynamicBackgrounds-popoutInner > .messagesPopoutWrap {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-  height: auto;
-}
-
-.DynamicBackgrounds-gridWrapper {
-  flex: 1 1 auto;
-  overflow: auto; /* gallery/groups area scrolls */
-  max-height: min(calc(100vh - 216px), 60vh); /* leave space for header and controls, scaled with viewport instead of a fixed offset */
-  padding: 12px !important;
-  box-sizing: border-box;
-  transform: translateZ(0); /* promote layer to reduce scroll jank */
-  scroll-behavior: smooth;
-  scrollbar-gutter: stable;
-  -webkit-overflow-scrolling: touch;
-  gap: 12px !important; /* enforce spacing between items */
-}
-
-/* Restore gaps and reserve image height to avoid layout shifts */
-.DynamicBackgrounds-gridWrapper > .DynamicBackgrounds-grid {
-  display: grid;
-  grid-template-columns: repeat(3, 1fr);
-  gap: 12px;
-  align-items: start;
-}
-
-.DynamicBackgrounds-gridWrapper > * {
-  padding: 6px;
-  box-sizing: border-box;
-  min-height: 100px;
-  margin-bottom: 12px;
-}
-
-.DynamicBackgrounds-gridWrapper .DynamicBackgrounds-group,
-.DynamicBackgrounds-gridWrapper .DynamicBackgrounds-item {
-  min-height: 110px;
-}
-
-.DynamicBackgrounds-gridWrapper img {
-  width: 100%;
-  height: 110px;
-  object-fit: cover;
-  display: block;
-}
-
-/* Die Karte, die von vorn nach hinten wandert.
-   Eine normale transition kann nur GERADLINIG zwischen zwei Punkten
-   interpolieren - damit gibt es kein Anheben und kein Herumfuehren. Deshalb
-   hier echte Keyframes mit Zwischenstationen. Die Start- und Zielkoordinaten
-   kommen per CSS-Variable aus dem JSX, weil sie von der Stapelgroesse
-   abhaengen.
-
-     0%   vorn oben, volle Deckkraft
-     28%  angehoben, noch vorne  -> "Karte aus dem Faecher nehmen"
-     72%  hinten angekommen, leicht ueber der Zielhoehe
-     100% unten eingereiht, blendet aus
-
-   Ausgeblendet wird erst ab 78%, damit der Weg wirklich sichtbar ist. */
-@keyframes DynamicBackgrounds-cardToBack {
-  0% {
-    transform: translate3d(calc(-50% + var(--bm-x-from)), var(--bm-y-from), 0) rotate(0deg) scale(1);
-    opacity: 1;
-    z-index: 400;
-  }
-  36% {
-    /* Angehoben und noch VORN. Der z-index bleibt bis hierher oben - genau
-       das ist der Punkt: faellt er schon bei 0%, liegt die Karte sofort
-       hinter allen anderen, das zweite Bild springt frei und es sieht aus,
-       als wuerde die Karte aus der Mitte hochgezogen. */
-    transform: translate3d(calc(-50% + var(--bm-x-from) + 12px), calc(var(--bm-y-from) - 62px), 0) rotate(4deg) scale(1.05);
-    opacity: 1;
-    z-index: 400;
-  }
-  38% {
-    /* Erst jetzt hinter den Stapel. Der Wechsel ist hart, faellt aber nicht
-       auf, weil die Karte hier bereits ueber den anderen schwebt. */
-    z-index: 1;
-  }
-  72% {
-    transform: translate3d(calc(-50% + var(--bm-x-to)), calc(var(--bm-y-to) - 26px), 0) rotate(var(--bm-rot-to, 0deg)) scale(0.97);
-    opacity: 1;
-  }
-  82% { opacity: 1; }
-  100% {
-    transform: translate3d(calc(-50% + var(--bm-x-to)), var(--bm-y-to), 0) rotate(var(--bm-rot-to, 0deg)) scale(1);
-    /* 0 wenn die Karte aus dem Fenster faellt, 1 wenn sie sichtbar unten
-       wieder einreiht (Kategorien mit hoechstens 5 Bildern). */
-    opacity: var(--bm-op-end, 0);
-    z-index: 1;
-  }
-}
-
-/* Stack GPU hints to reduce animation jank */
-.DynamicBackgrounds-categoryStack img {
-  will-change: transform;
-  backface-visibility: hidden;
-  -webkit-backface-visibility: hidden;
-  -webkit-transform-style: preserve-3d;
-}
-
-/* :first-child ist wichtig - das Label ist ein zweites > div und darf die
-   erzwungene Hoehe nicht bekommen. */
-.DynamicBackgrounds-categoryStack > div:first-child {
-  height: 176px !important;
-  padding-bottom: 0 !important;
-  box-sizing: border-box;
-  pointer-events: none; /* Klicks sollen die Kachel treffen, nicht das Einzelbild */
-}
-
-.DynamicBackgrounds-categoryStack img {
-  width: 190px !important;
-  height: 120px !important;
-  object-fit: cover;
-}
-
-.DynamicBackgrounds-categoryStack {
-  position: relative;
-  overflow: visible;   /* die Faecherung darf seitlich ueberstehen */
-  min-height: 0;
-  cursor: pointer;
-  border-radius: 10px;
-}
-
-.DynamicBackgrounds-categoryStack img { pointer-events: auto; }
-
-/* Name und Anzahl unter dem Stapel, dauerhaft sichtbar. */
-.DynamicBackgrounds-categoryLabel {
-  display: flex;
-  align-items: baseline;
-  justify-content: space-between;
-  gap: 8px;
-  margin-top: 10px;
-  padding: 0 2px;
-  font-size: 13px;
-  line-height: 1.3;
-}
-
-.DynamicBackgrounds-categoryName {
-  color: var(--text-normal, rgba(255,255,255,0.9));
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.DynamicBackgrounds-categoryCount {
-  flex: 0 0 auto;
-  font-variant-numeric: tabular-nums;
-  color: var(--text-muted, rgba(255,255,255,0.45));
-}
-
-.DynamicBackgrounds-categoryStack:hover .DynamicBackgrounds-categoryName {
-  color: var(--interactive-active, #fff);
-}
-
-/* Make stacks keyboard-focusable and show label on focus */
-.DynamicBackgrounds-categoryStack:focus {
-  outline: 2px solid var(--focus-primary, rgba(0,170,255,0.9));
-  outline-offset: 2px;
-}
-
-DynamicBackgrounds-gridWrapper::-webkit-scrollbar,
-.DynamicBackgrounds-gridWrapper::-webkit-scrollbar-thumb,
-.DynamicBackgrounds-gridWrapper::-webkit-scrollbar-track {
-}
-
- 
-
-.DynamicBackgrounds-gridWrapper::-webkit-scrollbar {
-  width: 10px;
-}
-.DynamicBackgrounds-gridWrapper::-webkit-scrollbar-track {
-  background: rgba(0,0,0,0.12);
-  border-radius: 10px;
-}
-.DynamicBackgrounds-gridWrapper::-webkit-scrollbar-thumb {
-  background: rgba(255,255,255,0.06);
-  border-radius: 10px;
-  border: 2px solid rgba(0,0,0,0.18);
-}
-.DynamicBackgrounds-gridWrapper::-webkit-scrollbar-thumb:hover {
-  background: rgba(255,255,255,0.12);
 }
 `);
   }
@@ -4337,10 +6195,32 @@ DynamicBackgrounds-gridWrapper::-webkit-scrollbar,
   const ACCENT_CACHE_MAX = 200;
   let letzteAccentQuelle = null;
 
+  /* Relative Helligkeit nach WCAG, fuer Farben der Form #rrggbb. */
+  function luminanz(hex) {
+    const [r, g, b] = [1, 3, 5].map(i => {
+      const v = parseInt(hex.slice(i, i + 2), 16) / 255;
+      return v <= 0.03928 ? v / 12.92 : Math.pow((v + 0.055) / 1.055, 2.4);
+    });
+    return 0.2126 * r + 0.7152 * g + 0.0722 * b;
+  }
+
+  /* Schriftfarbe fuer eine Flaeche in dieser Farbe: Weiss oder Fast-Schwarz, je
+     nachdem, was das hoehere Kontrastverhaeltnis ergibt. Das Schwarz ist so
+     dunkel gewaehlt, dass der schlechteste Fall (Flaeche mit mittlerer
+     Helligkeit) noch ueber 4,5 zu 1 liegt; mit einem helleren Schwarz waere er
+     darunter. */
+  function kontrastFarbe(hex) {
+    const dunkel = '#020204';
+    const l = luminanz(hex);
+    const gegenWeiss = 1.05 / (l + 0.05);
+    const gegenDunkel = (l + 0.05) / (luminanz(dunkel) + 0.05);
+    return gegenWeiss >= gegenDunkel ? '#ffffff' : dunkel;
+  }
+
   function writeAccents(farben) {
     DOM.removeStyle('DynamicBackgrounds-accent');
     DOM.addStyle('DynamicBackgrounds-accent',
-      `:root { --db-accent-1: ${farben[0]}; --db-accent-2: ${farben[1]}; }`);
+      `:root { --db-accent-1: ${farben[0]}; --db-accent-2: ${farben[1]}; --db-accent-1-contrast: ${kontrastFarbe(farben[0])}; --db-accent-2-contrast: ${kontrastFarbe(farben[1])}; }`);
   }
 
   /** Rechnet die Farben zum Bild und schreibt sie als CSS-Variablen. */
@@ -4467,7 +6347,22 @@ DynamicBackgrounds-gridWrapper::-webkit-scrollbar,
   // Inits and Event Listeners
   /** Manager to start and stop the slideshow. Internally handles the interval */
   const slideShowManager = function () {
-    let interval, resumeTimer, lastTick = 0, pausedRemaining = null, triggeredWhileHidden = false;
+    let interval, resumeTimer, lastTick = 0, pausedRemaining = null, triggeredWhileHidden = false, resumeAt = 0;
+
+    /* Zeitpunkt des naechsten Wechsels nach aussen, nur lesend: Der Kopf des
+       Managers zeichnet daraus den Fortschrittsring. Das Verhalten der Diashow
+       aendert sich dadurch nicht, sie meldet nur, wann sie sich aendert. */
+    const listeners = new Set();
+    const notify = () => listeners.forEach(fn => { try { fn(); } catch (e) { /* ein Zuhoerer darf die Diashow nicht stoeren */ } });
+    function subscribe(fn) { listeners.add(fn); return () => listeners.delete(fn); }
+    /** @returns {{total: number, remaining: number, running: boolean}|null} null, wenn die Diashow nicht laeuft und nichts angehalten ist */
+    function getTiming() {
+      const total = Math.max(constants.settings.slideshow.interval ?? 10000, 1000);
+      if (interval) return { total, remaining: Math.max(0, total - (Date.now() - lastTick)), running: true };
+      if (resumeTimer) return { total, remaining: Math.max(0, resumeAt - Date.now()), running: true };
+      if (pausedRemaining !== null) return { total, remaining: pausedRemaining, running: false };
+      return null;
+    }
     function handleVisibilityChange(e) {
       e.target.visibilityState === 'visible' && (triggeredWhileHidden = false);
     }
@@ -4476,6 +6371,7 @@ DynamicBackgrounds-gridWrapper::-webkit-scrollbar,
       document.addEventListener("visibilitychange", handleVisibilityChange);
       lastTick = Date.now();
       interval = setInterval(tick, Math.max(constants.settings.slideshow.interval ?? 10000, 1000));
+      notify();
     }
 
     /* Anhalten und exakt weiterlaufen.
@@ -4490,6 +6386,7 @@ DynamicBackgrounds-gridWrapper::-webkit-scrollbar,
       pausedRemaining = Math.max(0, total - (Date.now() - lastTick));
       clearInterval(interval); interval = null;
       clearTimeout(resumeTimer); resumeTimer = null;
+      notify();
     }
 
     function resume() {
@@ -4497,17 +6394,21 @@ DynamicBackgrounds-gridWrapper::-webkit-scrollbar,
       if (!constants.settings.slideshow.enabled) { pausedRemaining = null; return; }
       const rest = pausedRemaining;
       pausedRemaining = null;
+      resumeAt = Date.now() + rest;
       resumeTimer = setTimeout(() => {
         resumeTimer = null;
         tick();
         lastTick = Date.now();
         interval = setInterval(tick, Math.max(constants.settings.slideshow.interval ?? 10000, 1000));
+        notify();
       }, rest);
+      notify();
     }
 
     async function tick() {
       lastTick = Date.now();
-      {
+      notify();
+      try {
         if (document.visibilityState === 'hidden') {
           if (triggeredWhileHidden) return;
           else triggeredWhileHidden = true;
@@ -4544,6 +6445,7 @@ DynamicBackgrounds-gridWrapper::-webkit-scrollbar,
             while (x === currentIndex && counter++ < 25)
             // deselect all
             storedImages.forEach(e => {
+              releaseSlideSrc(e);
               if (!mounted) {
                 clearObjectURL(e);
                 e.src = null;
@@ -4553,7 +6455,7 @@ DynamicBackgrounds-gridWrapper::-webkit-scrollbar,
             const selectedImage = availableImages[x];
             selectedImage.selected = true;
             !mounted && setObjectURL(selectedImage, selectedImage.image);
-            viewTransition.setImage(selectedImage.src);
+            viewTransition.setImage(ensureSlideSrc(selectedImage));
             // persist changes
             try {
               const db = await openDB('images');
@@ -4564,6 +6466,7 @@ DynamicBackgrounds-gridWrapper::-webkit-scrollbar,
           } else if (availableImages.length) {
             const nextIndex = ((currentIndex ?? -1) + 1) % availableImages.length;
             storedImages.forEach(e => {
+              releaseSlideSrc(e);
               if (!mounted) {
                 clearObjectURL(e);
                 e.src = null;
@@ -4573,7 +6476,7 @@ DynamicBackgrounds-gridWrapper::-webkit-scrollbar,
             const selectedImage = availableImages[nextIndex];
             selectedImage.selected = true;
             !mounted && setObjectURL(selectedImage, selectedImage.image);
-            viewTransition.setImage(selectedImage.src);
+            viewTransition.setImage(ensureSlideSrc(selectedImage));
             try {
               const db = await openDB('images');
               await saveItems(db, 'images', storedImages, storedImages);
@@ -4582,6 +6485,9 @@ DynamicBackgrounds-gridWrapper::-webkit-scrollbar,
             console.log('%c[DynamicBackgrounds] %cBackground changed:', "color:#DBDCA6;font-weight:bold", "", new Date())
           }
         } catch (err) { console.error(err) }
+      } finally {
+        // zweite Meldung, wenn das neue Bild im Zwischenspeicher steht
+        notify();
       }
     }
     function stop() {
@@ -4592,8 +6498,9 @@ DynamicBackgrounds-gridWrapper::-webkit-scrollbar,
       pausedRemaining = null;
       triggeredWhileHidden = false;
       document.removeEventListener("visibilitychange", handleVisibilityChange);
+      notify();
     }
-    return { start, stop, pause, resume }
+    return { start, stop, pause, resume, getTiming, subscribe }
   }();
 
   /**  Controller for switching images */
@@ -5124,55 +7031,3 @@ DynamicBackgrounds-gridWrapper::-webkit-scrollbar,
 }
 
 
-// Kategorie-Quick-Button-Komponente
-function CategoryQuickButton({ categories, value, onChange }) {
-  const [open, setOpen] = React.useState(false);
-  const btnRef = React.useRef();
-  // value may be array (new) or string (legacy)
-  const selected = Array.isArray(value) ? value : (value ? [value] : []);
-  // Schließe Dropdown bei Klick außerhalb
-  React.useEffect(() => {
-    if (!open) return;
-    function handle(e) {
-      if (!btnRef.current?.parentElement.contains(e.target)) setOpen(false);
-    }
-    document.addEventListener('mousedown', handle);
-    return () => document.removeEventListener('mousedown', handle);
-  }, [open]);
-  return jsx('div', { style: { position: 'relative' } }, [
-    jsx('button', {
-      ref: btnRef,
-      /* Chip wie die anderen; die Beschriftung zeigt die Zahl der gefilterten
-         Kategorien direkt an. */
-      className: 'DynamicBackgrounds-chip' + (selected.length ? ' active amber' : ''),
-      title: selected.length ? `Slideshow categories: ${selected.join(', ')}` : 'Select slideshow categories',
-      onClick: () => setOpen(o => !o),
-      children: [jsx('svg', { key: 'i', width: 15, height: 15, viewBox: '0 0 24 24', fill: 'none', stroke: 'currentColor', strokeWidth: 2, strokeLinecap: 'round', strokeLinejoin: 'round',
-        children: jsx('path', { d: 'M10 4H2v16h20V6H12l-2-2z' })
-      }),
-      jsx('span', { key: 't' }, selected.length === 1 ? selected[0] : (selected.length ? selected.length + ' categories' : 'All categories'))]
-    }),
-    open && jsx('div', {
-      style: {
-        position: 'absolute', top: 36, left: 0, minWidth: 160, background: '#23272a', color: '#fff', borderRadius: 6, boxShadow: '0 4px 16px #000a', zIndex: 1000, padding: 4, fontSize: 15
-      },
-      children: [
-        jsx('div', {
-          style: { padding: '6px 12px', cursor: 'pointer', borderRadius: 4, background: (!selected || selected.length === 0) ? '#5865f2' : 'none', color: (!selected || selected.length === 0) ? '#fff' : undefined, marginBottom: 2 },
-          onClick: () => { onChange([]); setOpen(false); },
-          children: 'All categories'
-        }),
-        ...categories.map(cat => jsx('div', {
-          key: cat,
-          style: { padding: '6px 12px', cursor: 'pointer', borderRadius: 4, background: selected.includes(cat) ? '#5865f2' : 'none', color: selected.includes(cat) ? '#fff' : undefined, marginBottom: 2 },
-          onClick: () => {
-            const next = selected.includes(cat) ? selected.filter(c => c !== cat) : [...selected, cat];
-            onChange(next);
-            setOpen(false);
-          },
-          children: cat
-        }))
-      ]
-    })
-  ]);
-}

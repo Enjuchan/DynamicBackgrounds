@@ -27,9 +27,10 @@ The gear opens transitions, ambient effects and image adjustments:
 
 **Background management**
 
-- Paste or click to upload images; drag and drop after enabling
-  **Enable drop area** in the settings (off by default, because it moves the
-  window in front of Discord's own drop zone)
+- Add images with the Add button in the toolbar, the tile at the end of the
+  grid, or by pasting; drag and drop works after enabling **Enable drop area**
+  in the settings (off by default, because it moves the window in front of
+  Discord's own drop zone)
 - Add any image in Discord straight to your library by right-clicking it -
   switchable under **Add context menu entry on images**
 - Organise images into categories
@@ -87,11 +88,13 @@ slideshow pauses while you look and resumes exactly where it left off.
 
 **Riffling category stacks**
 
-Categories are shown as fanned stacks of their images. Hover one and it riffles
-through: the top card lifts, travels behind the stack and slots back in, and
-only then do the others move up. The stagger is deliberate - start both at once
-and the second card is already on top before the first has left, which reads as
-cards appearing rather than being flipped through.
+Categories are shown as fanned stacks of their images. Hover one and it leans
+toward the mouse, glows in the accent colour and riffles through: the top card
+lifts, travels behind the stack and slots back in, and only then do the others
+move up. The stagger is deliberate - start both at once and the second card is
+already on top before the first has left, which reads as cards appearing rather
+than being flipped through. The mouse wheel flips through a stack by hand, and
+opening a category flies its cards out of the stack into place.
 
 ---
 
@@ -170,20 +173,23 @@ settings darkens the image rather than the interface, and starts at `0.3`.
 
 ## Usage
 
-Open the manager through the button in the Discord toolbar.
+Open the manager through the button in the Discord toolbar; the window unfolds
+from that button.
 
-| Row | What it does |
-| --- | --- |
-| **Slideshow** | Controls what is currently playing: pause/resume, favourites filter, category filter, skip |
-| **Library** | Manages the collection: create categories, export as ZIP |
+The header shows the current image and its position. The large play button
+pauses and resumes the slideshow, and the ring around it shows the time until
+the next image. Next shows the next image now, Shuffle switches between random
+and alphabetical order.
 
-The three-dot menu holds rarer actions - opening a category directly and
-clearing all favourite marks. The gear opens transition, effect and adjustment
-settings.
+The toolbar switches the slideshow between all images and favourites, and holds
+the category field, the add button, a menu with new category, opening a
+category directly, ZIP export, removing all favourite marks and the storage
+size, and the gear that opens transition, effect and adjustment settings.
 
 Categories appear as fanned card stacks that riffle through their images on
-hover. Click one to see the images inside. A pink dot behind a category name
-marks the one the current background belongs to.
+hover, lean toward the mouse, and flip with the mouse wheel. Click one to see
+the images inside. A dot in the accent colour behind a category name marks the
+one the current background belongs to.
 
 Right-clicking any image in Discord offers to add it to the library directly,
 as long as **Add context menu entry on images** is enabled in the settings.
