@@ -13,6 +13,24 @@ major release.
 
 ---
 
+## 3.12.1
+
+### Changed
+
+- **Uncategorized comes last in the remaining lists too.** The category
+  buttons of the slideshow filter in the settings and the category choice on
+  each image card are now sorted like the manager, with Uncategorized at the end.
+
+### Fixed
+
+- **ZIP import has size limits.** A single image larger than 100 MB is
+  skipped and counted as failed, and a ZIP that states more than 4 GB in total
+  is refused with a message. Entries are also checked while they are unpacked,
+  so a file that contains more data than it states is stopped instead of
+  filling the memory.
+
+---
+
 ## 3.12.0
 
 ### Added

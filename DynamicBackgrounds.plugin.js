@@ -2,7 +2,7 @@
  * @name DynamicBackgrounds
  * @author Enju
  * @description Extends Discord themes with background images, slideshow, transitions and ambient effects.
- * @version 3.12.0
+ * @version 3.12.1
  * @source https://github.com/Enjuchan/DynamicBackgrounds/blob/main/DynamicBackgrounds.plugin.js
  * @updateUrl https://raw.githubusercontent.com/Enjuchan/DynamicBackgrounds/main/DynamicBackgrounds.plugin.js
  * @website https://github.com/Enjuchan/DynamicBackgrounds
@@ -81,6 +81,12 @@ const ambientTypes = {
    laesst sich nicht loeschen - beim Loeschen anderer Kategorien landen deren
    Bilder hier, statt verwaist zu werden. */
 const FALLBACK_CATEGORY = 'Uncategorized';
+
+/* Grenzen des ZIP-Imports gegen Dekompressionsbomben: Die Groessenangaben im
+   Zentralverzeichnis stammen aus der Datei selbst, deshalb wird zusaetzlich
+   beim Entpacken gezaehlt. */
+const ZIP_MAX_ENTRY_BYTES = 100 * 1024 * 1024;
+const ZIP_MAX_TOTAL_BYTES = 4 * 1024 * 1024 * 1024;
 
 /* Bis Version 3.4.3 hiess sie 'Standard'. Der Name steht an jedem Bild in der
    Datenbank, ein blosses Umbenennen wuerde also eine zweite, leere Kategorie
@@ -1903,7 +1909,7 @@ module.exports = meta => {
                     contextMenuObj,
                     setImages,
                     onSelect: handleSelect,
-                    categories: settings.categories,
+                    categories: [...settings.categories].sort(vergleicheKategorien),
                     onCategoryChange: handleCategoryChange
                   })) : allCategories.map(cat => {
                       const items = groupedByCategory[cat] || [];
@@ -2910,7 +2916,7 @@ module.exports = meta => {
                   className: 'DynamicBackgrounds-filterChip' + (!setting.slideshow?.categoryFilters || setting.slideshow.categoryFilters.length === 0 ? ' active' : ''),
                   children: 'All categories'
                 }),
-                ...setting.categories.map(cat => jsx('button', {
+                ...[...setting.categories].sort(vergleicheKategorien).map(cat => jsx('button', {
                   key: cat,
                   onClick: () => {
                     setSetting(prev => {
@@ -3764,12 +3770,14 @@ module.exports = meta => {
     if (count === 0xFFFF || dirOffset === 0xFFFFFFFF) throw new Error('ZIP64 archives are not supported');
 
     const entries = [];
+    let total = 0;
     let pos = dirOffset;
     for (let n = 0; n < count; n++) {
       if (pos + 46 > bytes.length || view.getUint32(pos, true) !== 0x02014b50) throw new Error('The ZIP file is damaged');
       const flags = view.getUint16(pos + 8, true);
       const method = view.getUint16(pos + 10, true);
       const compSize = view.getUint32(pos + 20, true);
+      const size = view.getUint32(pos + 24, true);
       const nameLen = view.getUint16(pos + 28, true);
       const extraLen = view.getUint16(pos + 30, true);
       const commentLen = view.getUint16(pos + 32, true);
@@ -3778,16 +3786,36 @@ module.exports = meta => {
       pos += 46 + nameLen + extraLen + commentLen;
 
       if (name.endsWith('/')) continue;
+      total += size;
+      if (total > ZIP_MAX_TOTAL_BYTES) throw new Error('The ZIP file claims to contain more than ' + (ZIP_MAX_TOTAL_BYTES / 1024 ** 3) + ' GB of data, so it is not imported');
       entries.push({
-        name, method, encrypted: (flags & 1) === 1,
+        name, method, size, encrypted: (flags & 1) === 1,
         read: async () => {
+          if (size > ZIP_MAX_ENTRY_BYTES) throw new Error('"' + name + '" is larger than ' + (ZIP_MAX_ENTRY_BYTES / 1024 ** 2) + ' MB and is skipped');
           if (view.getUint32(localOffset, true) !== 0x04034b50) throw new Error('The ZIP file is damaged');
           const start = localOffset + 30 + view.getUint16(localOffset + 26, true) + view.getUint16(localOffset + 28, true);
           const raw = bytes.subarray(start, start + compSize);
-          if (method === 0) return raw;
+          if (method === 0) {
+            if (raw.length !== size) throw new Error('"' + name + '" does not match its stated size');
+            return raw;
+          }
           if (method !== 8) throw new Error('Unsupported compression method ' + method);
-          const stream = new Blob([raw]).stream().pipeThrough(new DecompressionStream('deflate-raw'));
-          return new Uint8Array(await new Response(stream).arrayBuffer());
+          // Streamen und abbrechen, sobald mehr ankommt als angegeben; ein Aufruf von arrayBuffer() wuerde erst alles entpacken
+          const reader = new Blob([raw]).stream().pipeThrough(new DecompressionStream('deflate-raw')).getReader();
+          const out = new Uint8Array(size);
+          let got = 0;
+          for (;;) {
+            const { done, value } = await reader.read();
+            if (done) break;
+            if (got + value.length > size) {
+              await reader.cancel();
+              throw new Error('"' + name + '" contains more data than it states');
+            }
+            out.set(value, got);
+            got += value.length;
+          }
+          if (got !== size) throw new Error('"' + name + '" does not match its stated size');
+          return out;
         }
       });
     }
