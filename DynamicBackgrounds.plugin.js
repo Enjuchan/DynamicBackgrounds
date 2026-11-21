@@ -2,7 +2,7 @@
  * @name DynamicBackgrounds
  * @author Enju
  * @description Extends Discord themes with background images, slideshow, transitions and ambient effects.
- * @version 3.11.0
+ * @version 3.12.0
  * @source https://github.com/Enjuchan/DynamicBackgrounds/blob/main/DynamicBackgrounds.plugin.js
  * @updateUrl https://raw.githubusercontent.com/Enjuchan/DynamicBackgrounds/main/DynamicBackgrounds.plugin.js
  * @website https://github.com/Enjuchan/DynamicBackgrounds
@@ -119,10 +119,18 @@ function naechsteId(liste) {
   return hoechste + 1;
 }
 
+/* Alphabetisch, nur die Rueckfall-Kategorie steht immer am Ende. */
+function vergleicheKategorien(a, b) {
+  if (a === b) return 0;
+  if (a === FALLBACK_CATEGORY) return 1;
+  if (b === FALLBACK_CATEGORY) return -1;
+  return a.localeCompare(b, undefined, { sensitivity: 'base' });
+}
+
 function vergleicheNachKategorie(a, b) {
   const ka = a.category || FALLBACK_CATEGORY;
   const kb = b.category || FALLBACK_CATEGORY;
-  const k = ka.localeCompare(kb, undefined, { sensitivity: 'base' });
+  const k = vergleicheKategorien(ka, kb);
   return k !== 0 ? k : (a.id ?? 0) - (b.id ?? 0);
 }
 
@@ -438,6 +446,8 @@ module.exports = meta => {
     // Ohne diese Meldung wuerde die leere Liste vor dem Laden als leere Sammlung erscheinen.
     const [ready, setReady] = useState(false);
     const countEffect = useRef(0);
+    // saveItems loescht alles, was nicht in der Liste steht: Vor dem erfolgreichen Laden waere das die ganze Sammlung.
+    const loadedRef = useRef(false);
     const accessDB = useCallback(/** @param {(storedItems: ImageItem[], database: IDBDatabase) => void} cb */ cb => {
       /** @type {IDBDatabase | undefined} db */
       let db;
@@ -455,6 +465,7 @@ module.exports = meta => {
 
     useEffect(() => {
       accessDB(storedItems => {
+        loadedRef.current = true;
         setItems(storedItems.map(e => {
           if (!e.src) ensureObjectURL(e);
           return e;
@@ -484,6 +495,7 @@ module.exports = meta => {
     useEffect(() => {
       countEffect.current++;
       if (countEffect.current > 1) {
+        if (!loadedRef.current) return console.warn('%c[DynamicBackgrounds] %cImages were not loaded, saving skipped to protect the stored collection.', "color:#DBDCA6;font-weight:bold", "");
         // Chain onto the previous save so writes happen strictly one at a time, and always
         // persist the LATEST items (itemsRef.current) rather than the value captured when this
         // effect fired. Without this, uploading several images at once could trigger multiple
@@ -1004,7 +1016,6 @@ module.exports = meta => {
     const flightAnims = useRef([]);
     const stackLock = useRef({});       // je Kategorie: laeuft eine Mischung, ist eine vorgemerkt
     const stackLen = useRef({});        // Bildanzahl je Kategorie, vom Rendern gepflegt
-    const wheelAcc = useRef({ sum: 0, last: 0 });
     /* Mischt einen Stapel um einen Schritt (dir 1 vor, -1 zurueck). Waehrend
        einer laufenden Mischung wird hoechstens ein Schritt vorgemerkt. */
     const rotateStack = useCallback((cat, dir) => {
@@ -1036,6 +1047,8 @@ module.exports = meta => {
     const [showExportOverlay, setShowExportOverlay] = useState(false);
     // Anteil der gelesenen Bilder beim ZIP-Export; null, solange kein Export laeuft
     const [zipProgress, setZipProgress] = useState(null);
+    // Dasselbe fuer den ZIP-Import
+    const [importProgress, setImportProgress] = useState(null);
 
     /* Takt und laufendes Bild fuer den Kopf. Die Diashow waehlt Bilder, ohne den
        Zustand dieser Komponente zu kennen; sie meldet jeden Wechsel, und das
@@ -1091,7 +1104,7 @@ module.exports = meta => {
       for (const c of [...(settings.categories || []), ...Object.keys(groupedByCategory)]) {
         if (c && !seen.has(c)) { seen.add(c); out.push(c); }
       }
-      return out.sort((a, b) => a.localeCompare(b, undefined, { sensitivity: 'base' }));
+      return out.sort(vergleicheKategorien);
     }, [settings.categories, groupedByCategory]);
 
     /* Selbstheilung: verwaiste Kategorien zurueck in die Einstellungen, damit
@@ -1499,6 +1512,68 @@ module.exports = meta => {
     const upload = useUploader(setImages, settings.selectedCategory);
     const uploadRef = useRef(upload);
     uploadRef.current = upload;
+
+    /* Gegenstueck zum Export: Der oberste Ordner im ZIP wird zur Kategorie,
+       Dateien ohne Ordner kommen in die Rueckfall-Kategorie. Angelegt wird
+       ueber denselben Weg wie beim Hinzufuegen (Optimieren, Vorschau, Masse).
+       Als vorhanden gilt ein Bild gleicher Kategorie und Groesse, bei bekanntem
+       Namen auch gleichen Namens; origSize/origName merken die Datei im ZIP,
+       weil das gespeicherte Bild nach dem Optimieren eine andere Groesse hat. */
+    const handleImportZip = async () => {
+      if (importProgress !== null) return;
+      let files;
+      try {
+        files = await DiscordNative.fileManager.openFiles({
+          properties: ['openFile'],
+          filters: [{ name: 'ZIP', extensions: ['zip'] }]
+        });
+      } catch (error) {
+        console.error('ZIP import failed:', error);
+        return UI.showToast('Could not open the file dialog: ' + error.message, { type: 'error' });
+      }
+      if (!files?.length || !files[0].data) return;
+
+      try {
+        setImportProgress(0);
+        const bytes = files[0].data instanceof Uint8Array ? files[0].data : new Uint8Array(files[0].data);
+        const extensions = ['png', 'jpg', 'jpeg', 'jpe', 'jfif', 'exif', 'bmp', 'dib', 'rle', 'gif', 'avif', 'webp', 'svg', 'ico'];
+        const candidates = [];
+        for (const entry of readZipEntries(bytes)) {
+          const parts = entry.name.replace(/\\/g, '/').split('/').filter(Boolean);
+          const base = parts[parts.length - 1];
+          if (!base || entry.encrypted || parts[0] === '__MACOSX' || base.startsWith('.')) continue;
+          if (!extensions.includes(base.split('.').pop().toLowerCase())) continue;
+          candidates.push({ entry, base, category: parts.length > 1 ? parts[0] : FALLBACK_CATEGORY });
+        }
+        if (!candidates.length) return UI.showToast('The ZIP file contains no images', { type: 'info' });
+
+        const known = images.map(i => ({ category: i.category || FALLBACK_CATEGORY, size: i.image?.size, origSize: i.origSize, origName: i.origName }));
+        let imported = 0, skipped = 0, failed = 0;
+        for (let n = 0; n < candidates.length; n++) {
+          const { entry, base, category } = candidates[n];
+          try {
+            const data = await entry.read();
+            const type = getImageType(data);
+            if (!type) { failed++; continue; }
+            const duplicate = known.some(k => k.category === category && (k.origSize === data.length || k.size === data.length) && (!k.origName || k.origName === base));
+            if (duplicate) { skipped++; continue; }
+            const ok = await upload.handleFileTransfer(new File([data], base, { type }), { category, origName: base, origSize: data.length });
+            if (ok) { imported++; known.push({ category, origSize: data.length, origName: base }); } else failed++;
+          } catch (error) {
+            console.error('Could not import ' + entry.name + ':', error);
+            failed++;
+          }
+          setImportProgress((n + 1) / candidates.length);
+        }
+        UI.showToast(`Imported ${imported} image${imported === 1 ? '' : 's'}, skipped ${skipped} already present` + (failed ? `, ${failed} failed` : ''), { type: failed ? 'warning' : 'success' });
+      } catch (error) {
+        console.error('ZIP import failed:', error);
+        UI.showToast('Could not import the ZIP file: ' + error.message, { type: 'error' });
+      } finally {
+        setTimeout(() => setImportProgress(null), 400);
+      }
+    };
+
     const contentRef = useRef(null);
     const [dragging, setDragging] = useState(false);
     useEffect(() => {
@@ -1585,32 +1660,6 @@ module.exports = meta => {
     }, []);
 
     useEffect(() => { if (showCategoryInput) categoryInputRef.current?.focus(); }, [showCategoryInput]);
-
-    /* Mausrad ueber einem Stapel blaettert ihn. Nativ und nicht passiv
-       angemeldet, weil React Rad-Ereignisse passiv behandelt und dort kein
-       preventDefault geht. Kleine Trackpad-Schritte werden aufsummiert; erst
-       ab der Schwelle gibt es einen Mischschritt. */
-    useEffect(() => {
-      const grid = gridRef.current;
-      if (!grid) return;
-      const onWheel = e => {
-        if (e.ctrlKey) return;
-        const stack = e.target.closest?.('.DynamicBackgrounds-categoryStack');
-        if (!stack || !stack.dataset.cat) return;
-        e.preventDefault();
-        const acc = wheelAcc.current;
-        const now = performance.now();
-        if (now - acc.last > 250) acc.sum = 0;
-        acc.last = now;
-        acc.sum += e.deltaY * (e.deltaMode === 1 ? 16 : e.deltaMode === 2 ? 100 : 1);
-        if (Math.abs(acc.sum) < 60) return;
-        const dir = acc.sum > 0 ? 1 : -1;
-        acc.sum = 0;
-        rotateStack(stack.dataset.cat, dir);
-      };
-      grid.addEventListener('wheel', onWheel, { passive: false });
-      return () => grid.removeEventListener('wheel', onWheel);
-    }, [rotateStack]);
 
     /* Jeder Wechsel zwischen Uebersicht und Kategorie laeuft hier durch: erst
        laufende Fluege abbrechen (damit ein Klick mitten im Flug nichts
@@ -1746,6 +1795,7 @@ module.exports = meta => {
                         ContextMenu.open(e, ContextMenu.buildMenu([
                           { label: 'New category', action: () => setShowCategoryInput(s => !s) },
                           { label: 'Export ZIP', action: () => setShowExportOverlay(true) },
+                          { label: 'Import ZIP', action: handleImportZip },
                           { type: 'separator' },
                           {
                             label: 'Open category',
@@ -1790,6 +1840,14 @@ module.exports = meta => {
                 })
               ]
             }),
+            importProgress !== null ? jsx('div', {
+              key: 'importProgress',
+              className: 'DynamicBackgrounds-importProgress',
+              role: 'progressbar',
+              'aria-label': 'Importing ZIP',
+              'aria-valuemin': 0, 'aria-valuemax': 100, 'aria-valuenow': Math.round(importProgress * 100),
+              children: jsx('div', { className: 'DynamicBackgrounds-exportProgressFill', style: { transform: 'scaleX(' + importProgress + ')' } })
+            }) : null,
             // Zeile zum Zurueckgehen und Loeschen, nur innerhalb einer Kategorie
             settings.selectedCategory ? jsx('div', {
               key: 'categoryBar',
@@ -2445,17 +2503,22 @@ module.exports = meta => {
   function useUploader(setImages, currentCategory) {
     const [processing, setProcessing] = useState([]);
 
-    const handleFileTransfer = useCallback(async (blob) => {
+    /* extra: Felder, die zusaetzlich auf das Bild kommen (der ZIP-Import setzt
+       so Kategorie und Name). Das Versprechen endet, wenn das Bild in der Liste
+       steht, damit der Import eins nach dem anderen laufen kann. */
+    const handleFileTransfer = useCallback(async (blob, extra = {}) => {
       // Optimize newly uploaded images before creating object URL
       const filename = blob?.name;
       const optimized = await optimizeNewUpload(blob, filename);
       // Gleich mit erzeugen, sonst zeigt das Raster das neue Bild bis zum
       // naechsten Oeffnen in voller Aufloesung.
       const thumb = await makeThumb(optimized);
-      const img = new Image();
-      img.onload = () => setImages(prev => [...prev, { id: naechsteId(prev), image: optimized, thumb, width: img.width, height: img.height, selected: false, src: img.src, category: currentCategory || FALLBACK_CATEGORY }]);
-      img.onerror = () => clearObjectURL(img);
-      setObjectURL(img, optimized);
+      return new Promise(resolve => {
+        const img = new Image();
+        img.onload = () => { setImages(prev => [...prev, { id: naechsteId(prev), image: optimized, thumb, width: img.width, height: img.height, selected: false, src: img.src, category: currentCategory || FALLBACK_CATEGORY, ...extra }]); resolve(true); };
+        img.onerror = () => { clearObjectURL(img); resolve(false); };
+        setObjectURL(img, optimized);
+      });
     }, [setImages, currentCategory]);
     const handleUpload = useCallback(() => {
       DiscordNative.fileManager.openFiles({
@@ -2521,7 +2584,7 @@ module.exports = meta => {
       setProcessing(prev => prev.filter(t => t !== timeStamp));
     }, [handleFileTransfer, setProcessing]);
 
-    return { processing, handleUpload, handleDrop, handlePaste };
+    return { processing, handleUpload, handleDrop, handlePaste, handleFileTransfer };
   }
 
   const BAR_ICONS = {
@@ -2732,6 +2795,15 @@ module.exports = meta => {
     })
   }
 
+  /* FormTitle wird bei Gebrauch gesucht (siehe lazyLookup) und kann fehlen;
+     dann reicht eine schlichte Ueberschrift. */
+  function SettingsTitle({ children }) {
+    const FormTitle = constants.nativeUI.FormTitle;
+    return FormTitle
+      ? jsx(FormTitle, { children })
+      : jsx('div', { style: { fontWeight: 700, textTransform: 'uppercase', fontSize: '12px', margin: '8px 0' } }, children);
+  }
+
   // Setting Components
   function BuildSettings() {
     const [setting, setSetting] = useSettings();
@@ -2740,7 +2812,7 @@ module.exports = meta => {
     return jsx('div', {
       className: 'DynamicBackgrounds-settings',
       children: [
-        jsx(constants.nativeUI.FormTitle, { children: 'Transitions' }),
+        jsx(SettingsTitle, { children: 'Transitions' }),
         jsx(FormSwitch, {
           value: setting.transition.enabled,
           onChange: newVal => {
@@ -2795,7 +2867,7 @@ module.exports = meta => {
           },
         }),
         jsx('div', { role: 'separator', className: constants.separator?.separator }),
-        jsx(constants.nativeUI.FormTitle, { children: 'Slideshow' }),
+        jsx(SettingsTitle, { children: 'Slideshow' }),
         jsx(FormSwitch, {
           value: setting.slideshow.enabled,
           onChange: newVal => {
@@ -2977,12 +3049,13 @@ module.exports = meta => {
       return () => ctrl.abort();
     }, []);
 
-    const TextInputComponent = constants.nativeUI.TextInput || (({value, onChange, inputRef, rows, ...props}) => jsx('input', {
+    // Discords TextInput (frueher ueber "allowOverflow") ist aus den Modulen verschwunden; der Nachfolger sieht und verhaelt sich anders, daher bewusst das eigene Feld.
+    const TextInputComponent = ({value, onChange, inputRef, rows, ...props}) => jsx('input', {
       ref: inputRef,
       value, onChange: e => onChange(e.target.value),
       ...props,
       className: [props.className, 'DynamicBackgrounds-fallbackInput'].join(' ')
-    }));
+    });
 
     return jsx('label', {
       className: 'DynamicBackgrounds-FormNumberInput',
@@ -3113,12 +3186,12 @@ module.exports = meta => {
       }
     }, []);
 
-    const TextInputComponent = constants.nativeUI.TextInput || (({value, onChange, inputRef, rows, ...props}) => jsx('input', {
+    const TextInputComponent = ({value, onChange, inputRef, rows, ...props}) => jsx('input', {
       ref: inputRef,
       value, onChange: e => onChange(e.target.value),
       ...props,
       className: [props.className, 'DynamicBackgrounds-fallbackInput compact'].join(' ')
-    }));
+    });
     const MenuSliderControlComponent = constants.nativeUI.MenuSliderControl || (({ initialValue, onValueChange, asValueChanges, minValue, maxValue, disabled, ...props }) => jsx('input', {
       type: 'range', min: minValue, max: maxValue, defaultValue: initialValue, disabled,
       onChange: e => { const v = Number(e.target.value); asValueChanges?.(v); onValueChange?.(v); },
@@ -3667,6 +3740,58 @@ module.exports = meta => {
     end.setUint32(16, offset, true);          // Beginn des Zentralverzeichnisses
 
     return new Blob([...parts, ...central, new Uint8Array(end.buffer)], { type: 'application/zip' });
+  }
+
+  /**
+   * Liest das Zentralverzeichnis einer ZIP-Datei. Der Inhalt wird erst von read()
+   * entpackt, damit nie mehr als ein Bild gleichzeitig im Speicher liegt.
+   * Unterstuetzt Methode 0 (gespeichert) und 8 (deflate); ZIP64 und Verschluesselung nicht.
+   * @param {Uint8Array} bytes
+   * @returns {{name: string, method: number, read: () => Promise<Uint8Array>}[]} nur Dateien, keine Ordnereintraege
+   */
+  function readZipEntries(bytes) {
+    const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+    const decoder = new TextDecoder();
+
+    // Ende-Satz suchen: steht am Schluss, dahinter hoechstens ein Kommentar von 65535 Bytes
+    let end = -1;
+    for (let i = bytes.length - 22; i >= Math.max(0, bytes.length - 22 - 65535); i--) {
+      if (view.getUint32(i, true) === 0x06054b50) { end = i; break; }
+    }
+    if (end < 0) throw new Error('This is not a valid ZIP file');
+    const count = view.getUint16(end + 10, true);
+    const dirOffset = view.getUint32(end + 16, true);
+    if (count === 0xFFFF || dirOffset === 0xFFFFFFFF) throw new Error('ZIP64 archives are not supported');
+
+    const entries = [];
+    let pos = dirOffset;
+    for (let n = 0; n < count; n++) {
+      if (pos + 46 > bytes.length || view.getUint32(pos, true) !== 0x02014b50) throw new Error('The ZIP file is damaged');
+      const flags = view.getUint16(pos + 8, true);
+      const method = view.getUint16(pos + 10, true);
+      const compSize = view.getUint32(pos + 20, true);
+      const nameLen = view.getUint16(pos + 28, true);
+      const extraLen = view.getUint16(pos + 30, true);
+      const commentLen = view.getUint16(pos + 32, true);
+      const localOffset = view.getUint32(pos + 42, true);
+      const name = decoder.decode(bytes.subarray(pos + 46, pos + 46 + nameLen));
+      pos += 46 + nameLen + extraLen + commentLen;
+
+      if (name.endsWith('/')) continue;
+      entries.push({
+        name, method, encrypted: (flags & 1) === 1,
+        read: async () => {
+          if (view.getUint32(localOffset, true) !== 0x04034b50) throw new Error('The ZIP file is damaged');
+          const start = localOffset + 30 + view.getUint16(localOffset + 26, true) + view.getUint16(localOffset + 28, true);
+          const raw = bytes.subarray(start, start + compSize);
+          if (method === 0) return raw;
+          if (method !== 8) throw new Error('Unsupported compression method ' + method);
+          const stream = new Blob([raw]).stream().pipeThrough(new DecompressionStream('deflate-raw'));
+          return new Uint8Array(await new Response(stream).arrayBuffer());
+        }
+      });
+    }
+    return entries;
   }
 
   // utility
@@ -5275,6 +5400,12 @@ module.exports = meta => {
   inset: auto 0 -1px;
   height: 3px;
   overflow: hidden;
+  background: var(--dbm-line);
+}
+.DynamicBackgrounds-importProgress {
+  height: 3px;
+  overflow: hidden;
+  margin: -8px 12px 12px 2px;
   background: var(--dbm-line);
 }
 .DynamicBackgrounds-exportProgressFill {
@@ -6924,9 +7055,31 @@ input.DynamicBackgrounds-fallbackSlider {
           }
         }
 
+        /* Manche Module sind beim Start noch nicht geladen, spaeter schon. Sie werden
+           deshalb erst bei Gebrauch gesucht; ein Fehlen bleibt folgenlos (undefined).
+           Die Suche wiederholt sich hoechstens alle 2 s, weil sie bei dauerhaftem
+           Fehlen sonst bei jedem Zeichnen laeuft. */
+        function lazyLookup(target, key, label, fn) {
+          let value, lastTry = 0, warned = false;
+          Object.defineProperty(target, key, {
+            configurable: true,
+            enumerable: true,
+            get() {
+              if (value == null && Date.now() - lastTry > 2000) {
+                lastTry = Date.now();
+                try { value = fn(); } catch (e) { value = undefined; }
+                if (value == null && !warned) {
+                  warned = true;
+                  console.warn(`%c[DynamicBackgrounds] %cModule lookup "${label}" found nothing yet. A fallback is used while it is missing.`, "color:#DBDCA6;font-weight:bold", "");
+                }
+              }
+              return value ?? undefined;
+            }
+          });
+        }
+
         const modules = {
           toolbarClasses: safeLookup('toolbarClasses', () => Webpack.getByKeys("iconWrapper", "toolbar")), // classes for toolbar
-          messagesPopoutClasses: safeLookup('messagesPopoutClasses', () => Webpack.getByKeys("messagesPopout")), // classes for messages popout
           textStyles: safeLookup('textStyles', () => Webpack.getByKeys("defaultColor")), // classes for general text styles
           markupStyles: safeLookup('markupStyles', () => Webpack.getByKeys("markup")),
           slider: safeLookup('slider', () => Webpack.getByKeys("sliderContainer", "slider")),
@@ -6956,7 +7109,6 @@ input.DynamicBackgrounds-fallbackSlider {
           // Each component below is still findable individually, so look each one up directly instead.
           nativeUI: {
             FocusRing: safeLookup('nativeUI.FocusRing', () => Webpack.getModule(Filters.byStrings("FocusRing was given a focusTarget"), { searchExports: true })),
-            FormTitle: safeLookup('nativeUI.FormTitle', () => Webpack.getModule(Filters.byStrings(".errorSeparator"), { searchExports: true })),
             MenuSliderControl: safeLookup('nativeUI.MenuSliderControl', () => Webpack.getModule(Filters.byStrings("moveGrabber"), { searchExports: true })),
             Popout: safeLookup('nativeUI.Popout', () => Webpack.getModule(Filters.byStrings("Unsupported animation config:"), { searchExports: true })),
             Spinner: safeLookup('nativeUI.Spinner', () => Webpack.getModule(Filters.byStrings(".stopAnimation]:"), { searchExports: true })),
@@ -6966,7 +7118,6 @@ input.DynamicBackgrounds-fallbackSlider {
         }
         Object.assign(modules.nativeUI, {
           Button: safeLookup('nativeUI.Button', () => Webpack.getModule(Filters.byStrings(",submittingFinishedLabel:"), { searchExports: true })),
-          TextInput: safeLookup('nativeUI.TextInput', () => Webpack.getModule(Filters.byStrings("allowOverflow", "autoFocus"), { searchExports: true })),
         })
         const requiredNativeUI = ["Popout", "Tooltip", "Spinner", "FocusRing"];
         const missingNativeUI = requiredNativeUI.filter(key => !modules.nativeUI[key]);
@@ -6979,6 +7130,8 @@ input.DynamicBackgrounds-fallbackSlider {
           throw new Error("Missing essential modules: " + missingList);
         }
         Object.assign(constants, modules);
+        lazyLookup(constants, 'messagesPopoutClasses', 'messagesPopoutClasses', () => Webpack.getByKeys("messagesPopout")); // classes for messages popout
+        lazyLookup(constants.nativeUI, 'FormTitle', 'nativeUI.FormTitle', () => Webpack.getModule(Filters.byStrings(".errorSeparator"), { searchExports: true }));
         generateCSS();
         // On startup, refresh objectURL of stored selected image and populate in-memory cache.
         {

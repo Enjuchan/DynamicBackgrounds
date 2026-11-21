@@ -35,7 +35,7 @@ The gear opens transitions, ambient effects and image adjustments:
   switchable under **Add context menu entry on images**
 - Organise images into categories
 - Mark images as favourites
-- Export your whole library as a ZIP, sorted into folders by category
+- Export your whole library as a ZIP, sorted into folders by category, and import such a ZIP again
 - Automatic conversion to WebP to keep storage small
 
 **Slideshow**
@@ -93,8 +93,7 @@ toward the mouse, glows in the accent colour and riffles through: the top card
 lifts, travels behind the stack and slots back in, and only then do the others
 move up. The stagger is deliberate - start both at once and the second card is
 already on top before the first has left, which reads as cards appearing rather
-than being flipped through. The mouse wheel flips through a stack by hand, and
-opening a category flies its cards out of the stack into place.
+than being flipped through. Opening a category flies its cards out of the stack into place.
 
 ---
 
@@ -183,11 +182,11 @@ and alphabetical order.
 
 The toolbar switches the slideshow between all images and favourites, and holds
 the category field, the add button, a menu with new category, opening a
-category directly, ZIP export, removing all favourite marks and the storage
+category directly, ZIP export and import, removing all favourite marks and the storage
 size, and the gear that opens transition, effect and adjustment settings.
 
 Categories appear as fanned card stacks that riffle through their images on
-hover, lean toward the mouse, and flip with the mouse wheel. Click one to see
+hover and lean toward the mouse. Click one to see
 the images inside. A dot in the accent colour behind a category name marks the
 one the current background belongs to.
 
@@ -204,8 +203,10 @@ of removing them, so it always has to exist.
 
 Images live in IndexedDB under the database name `DynamicBackgrounds`.
 Category assignments and favourite marks are stored there too, not in the
-exported ZIP - the folder structure in the export preserves your categories so
-you can restore them by uploading category by category.
+exported ZIP - the folder structure in the export preserves your categories, and
+"Import ZIP" in the toolbar menu restores them: each top-level folder becomes a
+category, files outside any folder go to Uncategorized, and images that are
+already there are skipped.
 
 Uninstalling the plugin does not delete your images. The plugin settings
 contain a button to clear the database if you want a clean slate.
@@ -220,7 +221,9 @@ automatically when the file changes.
 
 ZIP export uses a small built-in writer rather than a library. Since images are
 already compressed, entries are stored without deflate - this keeps the file
-dependency-free, which BetterDiscord's guidelines require.
+dependency-free, which BetterDiscord's guidelines require. The import reads the
+ZIP's directory itself and unpacks deflated entries with the browser's built-in
+`DecompressionStream`.
 
 See [CHANGELOG.md](CHANGELOG.md) for the version history.
 

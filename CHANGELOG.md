@@ -13,6 +13,45 @@ major release.
 
 ---
 
+## 3.12.0
+
+### Added
+
+- **Import ZIP.** The manager's menu has a new entry next to Export ZIP. It
+  reads a ZIP such as the one the export creates: each top-level folder becomes
+  a category, files outside any folder go to Uncategorized. Only images are
+  taken. Images that are already there (same category, same size) are skipped.
+  A progress bar shows the import, and a message at the end says how many
+  images were imported and skipped. Images go through the same steps as when
+  you add them by hand (conversion to WebP, preview, dimensions).
+
+### Changed
+
+- **The mouse wheel no longer flips through a category stack.** It caught the
+  wheel and stopped the list from scrolling. Stacks still flip on hover.
+
+- **Uncategorized always comes last.** It used to be sorted in at U; now it
+  follows the last category everywhere categories are listed in order.
+
+### Fixed
+
+- **The settings no longer depend on Discord components that load late.** The
+  section titles in the plugin settings are looked up when needed and fall back
+  to a plain heading, so a missing component cannot break the page.
+- **The plugin's own text fields are used for number input.** The Discord
+  component it looked for no longer exists, which caused a warning at every
+  start.
+- **A failed first load can no longer wipe the collection.** Nothing is saved
+  before the images have been read successfully.
+
+### Notes
+
+- Importing a WebP image converts it again, like any added image, so images
+  restored from an export are re-encoded once more.
+- ZIP64 archives and encrypted entries are not supported.
+
+---
+
 ## 3.11.0
 
 ### Added
